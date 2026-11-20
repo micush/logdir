@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/netip"
 	"sort"
 	"strings"
 	"sync"
@@ -59,6 +60,12 @@ func (s *ldService) local(ctx context.Context, m ldQueryMsg) (ldQueryReply, bool
 	case "search", "tail", "stats":
 		if err := m.Query.Validate(); err != nil {
 			return r, false
+		}
+		if m.Query.SrcName != "" {
+			m.Query.srcSet = s.sendersByName(m.Query.SrcName)
+			if m.Query.srcSet == nil {
+				m.Query.srcSet = map[string]bool{}
+			}
 		}
 	}
 	switch m.Op {
@@ -167,10 +174,12 @@ type LdView struct {
 	Severity string `json:"severity"`
 	Message  string `json:"message"`
 	Source   string `json:"source,omitempty"`
-	Via      string `json:"via,omitempty"`
-	Node     string `json:"node,omitempty"`
-	MsgID    string `json:"msgid,omitempty"`
-	SD       string `json:"structured_data,omitempty"`
+	// SourceName is the name the sender's address reverse-looks-up to, when it has one (looked up in the background and kept for 30 minutes).
+	SourceName string `json:"source_name,omitempty"`
+	Via        string `json:"via,omitempty"`
+	Node       string `json:"node,omitempty"`
+	MsgID      string `json:"msgid,omitempty"`
+	SD         string `json:"structured_data,omitempty"`
 }
 
 func ldView(m LdMsg) LdView {
@@ -263,6 +272,7 @@ func (s *ldService) result(q LdQuery, parts []LdAnswer, errs []NodeError, n int)
 		res.Messages = append(res.Messages, ldView(m))
 	}
 	res.Matched = len(res.Messages)
+	s.nameSources(res.Messages)
 	switch {
 	case len(errs) > 0:
 		res.Note = "some nodes did not answer: what they hold is missing from this list"
@@ -410,3 +420,25 @@ func (s *ldService) oldestAll(ctx context.Context) int64 {
 }
 
 var _ = strings.TrimSpace
+
+// nameSources puts the reverse name of each message's sender into the view (a lookup is never waited on for more than a moment).
+func (s *ldService) nameSources(v []LdView) {
+	if s == nil || s.dns == nil {
+		return
+	}
+	var addrs []netip.Addr
+	for _, m := range v {
+		if a, err := netip.ParseAddr(m.Source); err == nil {
+			addrs = append(addrs, a.Unmap())
+		}
+	}
+	if len(addrs) == 0 {
+		return
+	}
+	names := s.dns.names(addrs, 1500*time.Millisecond)
+	for i := range v {
+		if a, err := netip.ParseAddr(v[i].Source); err == nil {
+			v[i].SourceName = names[a.Unmap()]
+		}
+	}
+}

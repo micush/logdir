@@ -54,7 +54,7 @@ One answer to an assistant is at most 1 MB by default and is cut, with a note, b
 Supported systems are Ubuntu, Debian, Fedora, RHEL, Rocky, Alma, Arch and Manjaro, and their derivatives. logdir is Linux-only (macvlan, AF_PACKET, inotify).
 
 ```
-tar xzf logdir_v37.tgz && cd logdir
+tar xzf logdir_v9.tgz && cd logdir
 sudo ./install.sh [--add-user NAME] [--no-start] [-y] [--dry-run]
 sudo logdir-uninstall [--purge]
 ```
@@ -82,10 +82,10 @@ The endpoint is MCP over streamable HTTP with JSON answers (protocol versions 20
 
 | Tool | What it does |
 |---|---|
-| `logs_search` | the messages that match words (`failed password and not root`), a host, a program, a severity (this severe or worse), a sender and a time range, from every node, merged by time |
+| `logs_search` | the messages that match words (`failed password and not root`), a host, a program, a severity (this severe or worse), a sender (an address, or a name with `*` wildcards: `source=sw*.example.com`) and a time range, from every node, merged by time |
 | `logs_tail` | the newest messages, or only what came after a time, to follow the log |
 | `logs_stats` | how many match, by severity, by the busiest hosts and programs, and per interval |
-| `logs_senders` | the senders (and when each was last heard from) |
+| `logs_senders` | the senders (and when each was last heard from), with the name each address reverse-looks-up to in DNS |
 | `logs_status` | the collector on every node: what it listens on, counters, disk |
 | `list_nodes`, `get_topology` | the cluster status: the nodes (reachable, paused, primary, version, update state) and the gateways with their active node and anycast addresses |
 | *(nothing else)* | **An MCP caller can only read logs and the state of the cluster.** There is no tool for logdir's own configuration, the GUI's API, alerts, the scheduler, updates, the host's load, LLDP, the log, users, backups or cluster tokens, and no tool takes a `node`: the node that serves the endpoint answers, and a `node` argument is refused. Those are read in the GUI or the CLI by an administrator. |

@@ -77,6 +77,7 @@ type ldFilter struct {
 	prog   string
 	minSev int // -1: any
 	src    string
+	srcSet map[string]bool // senders picked by name: nil is no such filter, an empty set matches nothing
 }
 
 func (f *ldFilter) hostOK(h string) bool { return f.host == "" || ldGlob(f.host, strings.ToLower(h)) }
@@ -108,6 +109,9 @@ func (f *ldFilter) match(m *LdMsg) bool {
 		return false
 	}
 	if f.src != "" && m.Src != f.src {
+		return false
+	}
+	if f.srcSet != nil && !f.srcSet[m.Src] {
 		return false
 	}
 	if !f.hostOK(m.Host) || !f.progOK(m.Prog) {
@@ -529,8 +533,12 @@ type LdQuery struct {
 	Prog   string `json:"prog,omitempty"`
 	MinSev int    `json:"min_severity"` // -1 any
 	Src    string `json:"src,omitempty"`
-	Limit  int    `json:"limit"`
-	Oldest bool   `json:"oldest_first,omitempty"` // the oldest matches (default: the newest)
+	// SrcName picks senders by name (the configured name, the reverse name or the host name; * wildcards) instead of by address: every node
+	// turns it into the addresses it knows (srcSet) when it runs the query.
+	SrcName string `json:"src_name,omitempty"`
+	srcSet  map[string]bool
+	Limit   int  `json:"limit"`
+	Oldest  bool `json:"oldest_first,omitempty"` // the oldest matches (default: the newest)
 }
 
 const (
@@ -558,7 +566,7 @@ func (q *LdQuery) Validate() error {
 }
 
 func (q *LdQuery) filter() *ldFilter {
-	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, src: q.Src}
+	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, src: q.Src, srcSet: q.srcSet}
 }
 
 // LdAnswer is what one node found.

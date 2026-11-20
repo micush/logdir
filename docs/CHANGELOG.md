@@ -1,5 +1,31 @@
 # Changelog
 
+## [v9] - 2026-11-20 — a pager on Logs ▸ Messages
+
+### Added
+- The **Messages** card has the pager of the other pages: **« ‹ page › »**, a page box and a **per page** menu (25 to 500, 100 by default), and the header says which messages are shown (`101–200 of 200`). The messages fetched (the **How many messages** menu) are paged in the browser; a new search, range, severity or limit goes back to page 1, the automatic refresh keeps the page, and **Follow** shows the newest. The CSV download still holds every message fetched.
+
+### Verified
+- `node --check`; in headless Chromium with the CSP on: next page, page box, 25 per page, and the pager hidden when there is one page.
+
+### Not verified
+- With thousands of real messages (the mock returns 200).
+
+## [v8] - 2026-11-20 — names for senders (reverse DNS), and Senders moved to Monitor
+
+### Added
+- **Reverse DNS names, as in flowdir.** A sender's address is looked up in the background (kept 30 minutes, never waited on), and the name shows wherever a sender does: **Monitor ▸ Senders** (hover for the full DNS name), the **Topology** squares (the host part, `sw1` for `sw1.example.com`, before the Configure ▸ Senders name), the tooltip of a message row, and the senders CSV (a **DNS name** column). `logs_senders` and `GET /api/logs/senders` carry `rdns` and `rev`.
+- **Search by sender name.** `source=` takes an address or a name with `*` wildcards (`source=sw*.example.com`); the name is the Configure ▸ Senders name, the reverse-DNS name (or its host part) or the host name the messages give. Results carry `source_name`.
+
+### Changed
+- **The Senders card moved from Logs to Monitor ▸ Senders**, its own page with the same table, CSV download and right-click menu (**Only this sender** opens Logs on it). The Logs page keeps the **Senders** tile.
+
+### Verified
+- gofmt, `go vet`, the full suite (only the PAM-header update test fails in this sandbox); a test of the names on senders and in search; the pages in headless Chromium with the CSP on: the Logs page without the card, Monitor ▸ Senders, the right-click **Only this sender** filling the filter box.
+
+### Not verified
+- Against a real DNS server or a real cluster (the name is from the test resolver, `127.0.0.1` → `localhost`). The Topology label order (DNS host, entry name, message host, address) mirrors flowdir.
+
 ## [v7] - 2026-11-20 — Settings: two different "Logs" renamed
 
 ### Changed

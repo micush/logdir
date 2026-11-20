@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ func parseLdTime(s string) (int64, error) {
 }
 
 // parseLdQuery reads the arguments of a search.
+var ldNameRE = regexp.MustCompile(`^[A-Za-z0-9._*-]{1,200}$`)
+
 func (s *ldService) parseLdQuery(v url.Values) (LdQuery, error) {
 	q := LdQuery{Q: strings.TrimSpace(v.Get("q")), Host: strings.TrimSpace(v.Get("host")), Prog: strings.TrimSpace(v.Get("program")), MinSev: -1}
 	if q.Prog == "" {
@@ -44,11 +47,13 @@ func (s *ldService) parseLdQuery(v url.Values) (LdQuery, error) {
 		}
 	}
 	if x := v.Get("source"); x != "" {
-		a, err := parseAddrLoose(x)
-		if err != nil {
-			return q, fmt.Errorf("source: %v", err)
+		if a, err := parseAddrLoose(x); err == nil {
+			q.Src = a
+		} else if ldNameRE.MatchString(x) {
+			q.SrcName = strings.ToLower(x) // a name or a pattern: sw1, sw*.example.com
+		} else {
+			return q, fmt.Errorf("source: %q is neither an address nor a name (letters, digits, . - _ and * wildcards)", x)
 		}
-		q.Src = a
 	}
 	q.Limit, _ = strconv.Atoi(v.Get("limit"))
 	q.Oldest = v.Get("oldest_first") == "1" || v.Get("oldest_first") == "true"
@@ -234,7 +239,7 @@ var logSearchProps = []mcpProp{
 	{name: "host", typ: "string", desc: "Only messages that say they come from this host (exact, or with * wildcards: sw*, *.example.com)."},
 	{name: "program", typ: "string", desc: "Only this program, tag or application name (sshd, %LINK-3-UPDOWN, TRAFFIC; * wildcards work)."},
 	{name: "severity", typ: "string", desc: "This severe or worse: emerg, alert, crit, err, warning, notice, info, debug (or 0 to 7). `err` gives emerg, alert, crit and err.", enum: []string{"emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"}},
-	{name: "source", typ: "string", desc: "Only messages received from this sender address."},
+	{name: "source", typ: "string", desc: "Only messages received from this sender: its address, or its name (the name on Configure ▸ Senders, the name its address reverse-looks-up to, or the host name its messages give; * wildcards: sw*.example.com)."},
 	{name: "limit", typ: "integer", desc: "How many messages, default 200, at most 5000."},
 	{name: "oldest_first", typ: "string", desc: "true: the oldest matches of the range (default: the newest).", enum: []string{"true", "false"}},
 }

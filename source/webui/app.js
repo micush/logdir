@@ -354,7 +354,7 @@
   const NAV_GROUPS = [
     ["Configure", [["cfg_general", "Settings"], ["cfg_groups", "Gateways"], ["cfg_mcp", "MCP"], ["cfg_privacy", "Privacy"], ["cfg_senders", "Senders"], ["cfg_web", "Web GUI"], ["cfg_monitoring", "Monitoring"], ["cfg_alerts", "Alerts"], ["cfg_backup", "Backup"], ["anycast", "Anycast"], ["users", "Users"]]],
     ["Operate", [["node", "Node"], ["cluster", "Cluster"], ["anycastop", "Anycast"], ["scheduler", "Scheduler"], ["history", "History"], ["updates", "Upgrade"]]],
-    ["Monitor", [["mcpusage", "MCP"], ["host", "Node"], ["gateways", "Gateways"], ["nodes", "Cluster"], ["anycaststatus", "Anycast"], ["alerts", "Alerts"], ["capture", "Capture"], ["log", "Log"]]],
+    ["Monitor", [["mcpusage", "MCP"], ["host", "Node"], ["gateways", "Gateways"], ["nodes", "Cluster"], ["senders", "Senders"], ["anycaststatus", "Anycast"], ["alerts", "Alerts"], ["capture", "Capture"], ["log", "Log"]]],
   ];
   const TABS = [["logs", LOGS], ["topology", TOPO]].concat(NAV_GROUPS.flatMap(([, items]) => items));
   const groupOf = (id) => (id === "logs" ? LOGS : id === "topology" ? TOPO : (NAV_GROUPS.find(([, items]) => items.some(([i]) => i === id)) || [null])[0]);
@@ -855,9 +855,10 @@
         const to = (e.to || []).filter((a) => mine.has(addrKey(a)));
         if (!to.length || now - e.last_seen > EXP_SEEN) continue;
         let x = by.get(e.addr);
-        if (!x) { x = { addr: e.addr, name: e.name || "", host: e.host || "", format: e.via || "?", last: 0, first: 0, to: new Set(), nodes: new Set(), records: 0, datagrams: 0, rate: 0 }; by.set(e.addr, x); }
+        if (!x) { x = { addr: e.addr, name: e.name || "", host: e.host || "", rev: e.rev || "", rdns: e.rdns || "", format: e.via || "?", last: 0, first: 0, to: new Set(), nodes: new Set(), records: 0, datagrams: 0, rate: 0 }; by.set(e.addr, x); }
         for (const a of to) x.to.add(a);
         if (!x.host && e.host) x.host = e.host;
+        if (!x.rev && e.rev) { x.rev = e.rev; x.rdns = e.rdns || ""; }
         if (e.node) x.nodes.add(e.node);
         x.last = Math.max(x.last, e.last_seen); x.first = x.first ? Math.min(x.first, e.first_seen) : e.first_seen;
         x.records += e.messages || 0; x.datagrams += e.bytes || 0;
@@ -867,11 +868,11 @@
       for (const x of out) x.status = now - x.last > EXP_LATE ? "bad" : now - x.last > EXP_QUIET ? "warn" : "ok";
       return out.sort((a, b) => String(expLabel(a)).localeCompare(String(expLabel(b)), undefined, { numeric: true }));
     }
-    // the top line of a sender's square: the host name its messages give, else the name of its Configure ▸ Senders entry, else the address;
+    // the top line of a sender's square: the host part of the name its address reverse-looks-up to, else the name of its Configure ▸ Senders entry, else the host name its messages give, else the address;
     // the second line is the address (when it is not the top line); how it sends (udp, tcp, tls) is in the tooltip
-    const expLabel = (x) => x.host || x.name || x.addr;
+    const expLabel = (x) => x.rev || x.name || x.host || x.addr;
     const expSub = (x) => (expLabel(x) === x.addr ? "" : x.addr);
-    const expTip = (x) => [(x.host || x.name ? (x.host || x.name) + " — " : "Sender ") + x.addr, x.host && x.name && x.name !== x.host ? "Senders entry: " + x.name : "", "Sends by " + x.format, "Sends to " + [...x.to].join(", "),
+    const expTip = (x) => [(expLabel(x) !== x.addr ? expLabel(x) + " — " : "Sender ") + x.addr, x.rdns ? "DNS name: " + x.rdns : "", x.name && x.name !== x.rev ? "Senders entry: " + x.name : "", x.host && x.host !== x.rev && x.host !== x.name ? "Its messages say: " + x.host : "", "Sends by " + x.format, "Sends to " + [...x.to].join(", "),
       "Last message " + spanText(Date.now() / 1000 - x.last) + " ago" + (x.status === "bad" ? " (silent for a while: gone from here after 15 minutes)" : x.status === "warn" ? " (quiet)" : ""), x.nodes.size ? "Heard by " + [...x.nodes].join(", ") : "",
       x.first ? "First heard " + spanText(Date.now() / 1000 - x.first) + " ago" : "", x.records.toLocaleString() + " messages, " + x.datagrams.toLocaleString() + " bytes", "Click: this sender's messages"].filter(Boolean).join("\n");
     // ── drawing ──────────────────────────────────────────────────────────
@@ -4342,7 +4343,7 @@
     const LIMITS = [100, 200, 500, 1000, 5000];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
-    const kept = { range: "1h", severity: "", host: "", program: "", source: "", q: "", limit: 200 };
+    const kept = { range: "1h", severity: "", host: "", program: "", source: "", q: "", limit: 200, page: 0, size: 100 };
     const SEVNAMES = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
     const count = (v) => (Number(v) || 0).toLocaleString();
     const niceMax = (v) => {
@@ -4362,7 +4363,7 @@
       return (withDate ? d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " : "") + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds()) + "." + String(d.getMilliseconds()).padStart(3, "0");
     };
 
-    let tiles, chartBox, msgBox, hostBox, senderBox, qIn, rangeSel, sevSel, limitSel, followBtn;
+    let tiles, chartBox, msgBox, hostBox, qIn, rangeSel, sevSel, limitSel, followBtn;
     let lastAt = 0, seq = 0, senders = [], stats = null, res = null, msgs = [], following = false, followAt = 0, followBusy = false, lastW = 0;
 
     const params = (extra) => {
@@ -4390,7 +4391,7 @@
       kept.q = rest.join(" ");
     }
     function set(next) {
-      Object.assign(kept, next);
+      Object.assign(kept, next); kept.page = 0;
       qIn.value = filterText(); sevSel.value = kept.severity;
       load();
     }
@@ -4405,7 +4406,7 @@
     }
     function row(m, multi) {
       const prog = m.program ? h("button", { type: "button", class: "qlink", title: "Only this program", onclick: () => set({ program: m.program }) }, m.program, m.pid ? h("span", { class: "muted" }, "[" + m.pid + "]") : null) : null;
-      return h("tr", { oncontextmenu: rowMenu(messageMenu(m)) },
+      return h("tr", { oncontextmenu: rowMenu(messageMenu(m)), title: m.source ? "Sender " + m.source + (m.source_name ? " (" + m.source_name + ")" : "") : null },
         h("td", { class: "mono nowrap", title: m.time }, clock(m.t, showTime())),
         h("td", {}, h("span", { class: sevCls(m.severity) }, m.severity)),
         h("td", {}, m.host ? h("button", { type: "button", class: "qlink", title: "Only this host", onclick: () => set({ host: m.host }) }, m.host) : "–"),
@@ -4417,7 +4418,22 @@
       const r = res || { nodes: 1, node_errors: [] };
       const multi = (r.nodes || 1) > 1;
       const typingNow = document.activeElement === qIn, at0 = qIn.selectionStart, at1 = qIn.selectionEnd;   // the box is in this card's header, built again on every report
-      const list = msgs.slice().reverse();   // the newest first
+      const all = msgs.slice().reverse();   // the newest first
+      // paging: the messages asked for are in the page; this shows a screenful of them at a time (while following, always the newest)
+      const size = kept.size, pageCount = Math.max(1, Math.ceil(all.length / size));
+      if (following) kept.page = 0;
+      kept.page = Math.min(Math.max(kept.page, 0), pageCount - 1);
+      const from = kept.page * size, list = all.slice(from, from + size);
+      const go = (p) => () => { kept.page = p; drawMessages(); };
+      const mkBtn = (label, title, dis, p) => h("button", { type: "button", class: "btn small", title, "aria-label": title, disabled: dis, onclick: go(p) }, label);
+      const pageIn = h("input", { type: "number", min: "1", max: String(pageCount), class: "policy-page", "aria-label": "Page number", value: String(kept.page + 1),
+        onchange: (e) => { kept.page = (parseInt(e.target.value, 10) || 1) - 1; drawMessages(); } });
+      const sizeSel = h("select", { "aria-label": "Messages per page", onchange: (e) => { kept.size = Number(e.target.value); kept.page = 0; drawMessages(); } },
+        [25, 50, 100, 250, 500].map((n) => h("option", { value: String(n) }, n + " per page")));
+      sizeSel.value = String(kept.size);
+      const pager = h("span", { class: "policy-pager" }, mkBtn("«", "First page", kept.page === 0, 0), mkBtn("‹", "Previous page", kept.page === 0, kept.page - 1), pageIn, h("span", { class: "muted" }, "of " + pageCount),
+        mkBtn("›", "Next page", kept.page >= pageCount - 1, kept.page + 1), mkBtn("»", "Last page", kept.page >= pageCount - 1, pageCount - 1));
+      pager.hidden = pageCount < 2;
       const body = list.length
         ? h("div", { class: "scroll" }, h("table", { class: "qlogs" },
           h("thead", {}, h("tr", {}, ["Time", "Severity", "Host", "Program", "Message", multi ? "Node" : null].filter((x) => x != null).map((x) => h("th", {}, x)))),
@@ -4425,10 +4441,10 @@
         : h("div", { class: "empty" }, "No message matches in this range.");
       const nodeErr = (r.node_errors || []).length ? h("span", { class: "bad-text small", title: r.node_errors.map((e) => e.node + ": " + e.error).join("\n") }, " " + r.node_errors.length + " of " + r.nodes + " nodes did not answer") : null;
       const note = r.note && !nodeErr ? h("span", { class: "muted small", title: r.note }, "ⓘ") : null;
-      const csv = () => [["Time (UTC)", "Severity", "Facility", "Host", "Program", "PID", "Message", "Sender", "Via", "Node"], ...list.map((m) => [m.time, m.severity, m.facility, m.host || "", m.program || "", m.pid || "", m.message, m.source || "", m.via || "", m.node || ""])];
+      const csv = () => [["Time (UTC)", "Severity", "Facility", "Host", "Program", "PID", "Message", "Sender", "Sender DNS name", "Via", "Node"], ...all.map((m) => [m.time, m.severity, m.facility, m.host || "", m.program || "", m.pid || "", m.message, m.source || "", m.source_name || "", m.via || "", m.node || ""])];
       clear(msgBox).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(following ? "Messages (following)" : "Messages")), nodeErr, note, h("span", { class: "grow" }),
         h("span", { class: "qfiltbox" }, qIn), h("span", { class: "grow" }),
-        h("span", { class: "muted small" }, count(list.length) + (r.truncated && !following ? " newest" : "")), list.length ? csvButton("Log messages", csv) : null), h("div", { class: "body flush" }, body)));
+        h("span", { class: "muted small" }, (all.length ? count(from + 1) + "–" + count(from + list.length) + " of " : "") + count(all.length) + (r.truncated && !following ? " newest" : "")), pager, all.length ? sizeSel : null, all.length ? csvButton("Log messages", csv) : null), h("div", { class: "body flush" }, body)));
       if (typingNow) { qIn.focus(); try { qIn.setSelectionRange(at0, at1); } catch (_) { /* not a text box */ } }
     }
     function drawTiles() {
@@ -4494,31 +4510,6 @@
     function drawTops() {
       clear(hostBox).append(topCard("Busiest hosts", "host", stats && stats.top_hosts, (n) => set({ host: n })), topCard("Busiest programs", "program", stats && stats.top_programs, (n) => set({ program: n })));
     }
-    function drawSenders() {
-      // one row per sender: a sender heard by two nodes (its messages move with the active gateway) is one, with the messages added up and the nodes listed
-      const by = new Map();
-      for (const e of senders.slice().sort((a, b) => b.last_seen - a.last_seen)) {
-        const m = by.get(e.addr);
-        if (!m) { by.set(e.addr, { ...e, nodes: e.node ? [e.node] : [] }); continue; }
-        m.messages += e.messages || 0; m.bytes += e.bytes || 0;
-        m.first_seen = Math.min(m.first_seen || e.first_seen, e.first_seen || m.first_seen);
-        if (!m.name && e.name) m.name = e.name;
-        if (!m.host && e.host) m.host = e.host;
-        if (e.node && !m.nodes.includes(e.node)) m.nodes.push(e.node);
-      }
-      const rows = [...by.values()].map((e) => ({ ...e, node: e.nodes.join(", ") }));
-      const body = rows.length
-        ? h("div", { class: "scroll" }, h("table", {},
-          h("thead", {}, h("tr", {}, ["Sender", "Host", "Via", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
-          h("tbody", {}, rows.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => set({ source: e.addr })], "-", ...netToolMenu(e.addr)]) },
-            h("td", {}, e.name ? e.name + " " : "", h("span", { class: e.name ? "muted small mono" : "mono" }, e.addr)), h("td", {}, e.host || "–"), h("td", {}, e.via || "–"),
-            h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))
-        : h("div", { class: "empty" }, "No sender has sent anything yet.");
-      clear(senderBox).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Senders")), h("span", { class: "grow" }),
-        rows.length ? csvButton("Log senders", () => [["Sender", "Name", "Host", "Via", "First seen (UTC)", "Last seen (UTC)", "Messages", "Bytes", "Node"],
-          ...rows.map((e) => [e.addr, e.name || "", e.host || "", e.via || "", csvIso(e.first_seen), csvIso(e.last_seen), e.messages, e.bytes, e.node || ""])]) : null), h("div", { class: "body flush" }, body)));
-    }
-
     async function load() {
       const my = ++seq;
       try {
@@ -4528,7 +4519,7 @@
         res = rep.data; msgs = res.messages || []; stats = st.data; senders = (sn.data && sn.data.senders) || [];
         lastAt = Date.now();
         setBad("");
-        drawTiles(); drawChart(); drawMessages(); drawTops(); drawSenders();
+        drawTiles(); drawChart(); drawMessages(); drawTops();
       } catch (e) {
         if (e.message === "unauthenticated") return;
         setBad(e.message);
@@ -4550,7 +4541,7 @@
       } catch (e) { if (e.message !== "unauthenticated") setBad(e.message); } finally { followBusy = false; }
     }
     function setBad(msg) { qIn.classList.toggle("qbad", !!msg); qIn.title = msg || ""; qIn.setAttribute("aria-invalid", msg ? "true" : "false"); }
-    function apply() { readFilter(); load(); }
+    function apply() { readFilter(); kept.page = 0; load(); }
 
     return {
       mount(main) {
@@ -4560,21 +4551,21 @@
           onkeydown: (e) => { if (e.key === "Enter") { clearTimeout(typed); apply(); } }, oninput: () => { clearTimeout(typed); typed = setTimeout(apply, 600); } });
         if (state.prefill.logs != null) { kept.source = state.prefill.logs; state.prefill.logs = null; }   // sent here from the Topology page: one sender's messages
         qIn.value = filterText();
-        rangeSel = h("select", { "aria-label": "Time range", onchange: () => { kept.range = rangeSel.value; load(); } }, RANGES.map(([id, text]) => h("option", { value: id }, text)));
+        rangeSel = h("select", { "aria-label": "Time range", onchange: () => { kept.range = rangeSel.value; kept.page = 0; load(); } }, RANGES.map(([id, text]) => h("option", { value: id }, text)));
         rangeSel.value = kept.range;
-        sevSel = h("select", { "aria-label": "Severity", onchange: () => { kept.severity = sevSel.value; load(); } }, SEVS.map(([id, text]) => h("option", { value: id }, text)));
+        sevSel = h("select", { "aria-label": "Severity", onchange: () => { kept.severity = sevSel.value; kept.page = 0; load(); } }, SEVS.map(([id, text]) => h("option", { value: id }, text)));
         sevSel.value = kept.severity;
-        limitSel = h("select", { "aria-label": "How many messages", onchange: () => { kept.limit = Number(limitSel.value); load(); } }, LIMITS.map((n) => h("option", { value: String(n) }, n + " messages")));
+        limitSel = h("select", { "aria-label": "How many messages", onchange: () => { kept.limit = Number(limitSel.value); kept.page = 0; load(); } }, LIMITS.map((n) => h("option", { value: String(n) }, n + " messages")));
         limitSel.value = String(kept.limit);
         followBtn = h("button", { type: "button", class: "btn", "aria-pressed": "false", onclick: () => {
           following = !following;
           followBtn.setAttribute("aria-pressed", following ? "true" : "false");
           if (following) { followAt = 0; followStep(); } else drawMessages();
         } }, "Follow");
-        tiles = h("div", { class: "qtiles" }); chartBox = h("div", {}); msgBox = h("div", {}); hostBox = h("div", { class: "logtops" }); senderBox = h("div", {});
+        tiles = h("div", { class: "qtiles" }); chartBox = h("div", {}); msgBox = h("div", {}); hostBox = h("div", { class: "logtops" });
         if (window.ResizeObserver) { let tm = 0; new ResizeObserver(() => { clearTimeout(tm); tm = setTimeout(() => { if (stats && Math.abs(chartBox.clientWidth - lastW) > 24) drawChart(); }, 150); }).observe(chartBox); }
         const bar = h("div", { class: "toolbar qbar qlogbar" }, rangeSel, sevSel, limitSel, followBtn);
-        main.append(bar, tiles, h("div", { class: "hosttables flowwide" }, chartBox, msgBox, hostBox, senderBox));
+        main.append(bar, tiles, h("div", { class: "hosttables flowwide" }, chartBox, msgBox, hostBox));
         drawMessages();   // so the filter box is there even when the first report fails
         load();
       },
@@ -4582,6 +4573,59 @@
         if (following) { if (Date.now() - followAt >= FOLLOW_MS) await followStep(); return; }
         if (Date.now() - lastAt >= REFRESH_MS && document.activeElement !== qIn) await load();
       },
+    };
+  })();
+
+  // ── Senders, Monitor  (API: GET /api/logs/senders) ───────────────────────────────
+  // Who is sending syslog to the cluster: one row to a sender, its messages added up across the nodes that heard it.
+  VIEWS.senders = (() => {
+    const REFRESH_MS = 5000;
+    let box, bad, seq = 0, lastAt = 0;
+    const count = (v) => (Number(v) || 0).toLocaleString();
+    const ago = (u) => { const s = Math.max(0, Math.floor(Date.now() / 1000 - u)); return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+    const only = (addr) => { state.prefill.logs = addr; selectTab("logs"); };   // the Logs page, on that sender's messages
+    function draw(senders) {
+      // one row per sender: a sender heard by two nodes (its messages move with the active gateway) is one, with the messages added up and the nodes listed
+      const by = new Map();
+      for (const e of senders.slice().sort((a, b) => b.last_seen - a.last_seen)) {
+        const m = by.get(e.addr);
+        if (!m) { by.set(e.addr, { ...e, nodes: e.node ? [e.node] : [] }); continue; }
+        m.messages += e.messages || 0; m.bytes += e.bytes || 0;
+        m.first_seen = Math.min(m.first_seen || e.first_seen, e.first_seen || m.first_seen);
+        if (!m.name && e.name) m.name = e.name;
+        if (!m.host && e.host) m.host = e.host;
+        if (!m.rdns && e.rdns) m.rdns = e.rdns;
+        if (e.node && !m.nodes.includes(e.node)) m.nodes.push(e.node);
+      }
+      const rows = [...by.values()].map((e) => ({ ...e, node: e.nodes.join(", ") }));
+      const body = rows.length
+        ? h("div", { class: "scroll" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Sender", "Host", "Via", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
+          h("tbody", {}, rows.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => only(e.addr)], "-", ...netToolMenu(e.addr)]) },
+            h("td", { title: e.rdns ? "DNS name: " + e.rdns : "" }, (e.name || e.rdns) ? (e.name || e.rdns) + " " : "", h("span", { class: (e.name || e.rdns) ? "muted small mono" : "mono" }, e.addr)), h("td", {}, e.host || "–"), h("td", {}, e.via || "–"),
+            h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))
+        : h("div", { class: "empty" }, "No sender has sent anything yet.");
+      clear(box).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Senders")), h("span", { class: "grow" }),
+        rows.length ? csvButton("Log senders", () => [["Sender", "Name", "DNS name", "Host", "Via", "First seen (UTC)", "Last seen (UTC)", "Messages", "Bytes", "Node"],
+          ...rows.map((e) => [e.addr, e.name || "", e.rdns || "", e.host || "", e.via || "", csvIso(e.first_seen), csvIso(e.last_seen), e.messages, e.bytes, e.node || ""])]) : null), h("div", { class: "body flush" }, body)));
+    }
+    async function load() {
+      const my = ++seq;
+      try {
+        const r = await api("GET", "/api/logs/senders");
+        if (my !== seq) return;
+        lastAt = Date.now();
+        clear(bad);
+        draw((r.data && r.data.senders) || []);
+      } catch (e) { fail(bad)(e); }
+    }
+    return {
+      mount(main) {
+        bad = h("div", { "aria-live": "polite" }); box = h("div", {});
+        main.append(bad, box);
+        load();
+      },
+      async poll() { if (Date.now() - lastAt >= REFRESH_MS) await load(); },
     };
   })();
 

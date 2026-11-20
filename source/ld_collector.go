@@ -62,6 +62,8 @@ type LdSenderInfo struct {
 	Addr  string   `json:"addr"`
 	Name  string   `json:"name,omitempty"`
 	Host  string   `json:"host,omitempty"` // the host name the sender's messages give
+	RDNS  string   `json:"rdns,omitempty"` // the name the address reverse-looks-up to (sw1.example.com); empty while unknown or when it has none
+	Rev   string   `json:"rev,omitempty"`  // its host part (sw1): what Topology calls the sender
 	Via   string   `json:"via,omitempty"`
 	First int64    `json:"first_seen"`
 	Last  int64    `json:"last_seen"`
@@ -72,9 +74,11 @@ type LdSenderInfo struct {
 }
 
 type ldService struct {
-	sup   *Supervisor
-	mg    *Mgmt
-	store *ldStore
+	sup     *Supervisor
+	mg      *Mgmt
+	store   *ldStore
+	dns     *ldDNS
+	dnsBusy atomic.Bool // a background reverse lookup of senders is running
 
 	mu        sync.Mutex
 	udp       map[ldListenKey]net.PacketConn
@@ -107,7 +111,7 @@ func newLdService(sup *Supervisor, mg *Mgmt) *ldService {
 		}
 	}
 	return &ldService{
-		sup: sup, mg: mg, store: newLdStore(dir, selfHost()),
+		sup: sup, mg: mg, store: newLdStore(dir, selfHost()), dns: newLdDNS(),
 		udp: map[ldListenKey]net.PacketConn{}, lns: map[ldListenKey]net.Listener{}, failed: map[ldListenKey]string{},
 		senders: map[netip.Addr]*ldSender{}, refusedAt: map[netip.Addr]time.Time{}, expDNS: map[string][]netip.Prefix{},
 		conns: map[net.Conn]struct{}{},
@@ -632,11 +636,48 @@ func (s *ldService) Senders() []LdSenderInfo {
 		out = append(out, info)
 	}
 	s.mu.Unlock()
+	var unknown []netip.Addr
 	for i := range out {
 		a, _ := netip.ParseAddr(out[i].Addr)
 		out[i].Name = s.senderName(a)
+		if name, known := s.dns.peek(a); known {
+			out[i].RDNS, out[i].Rev = name, hostPart(name)
+		} else {
+			unknown = append(unknown, a)
+		}
+	}
+	if len(unknown) > 0 && s.dnsBusy.CompareAndSwap(false, true) {
+		go func() { // the names are looked up in the background; the next call has them
+			defer s.dnsBusy.Store(false)
+			s.dns.names(unknown, 8*time.Second)
+		}()
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Addr < out[j].Addr })
+	return out
+}
+
+// sendersByName is the addresses (of the senders this node has heard) whose configured name, reverse name or host name matches the
+// pattern (case ignored, * wildcards): what a search by source=sw*.example.com means on this node.
+func (s *ldService) sendersByName(pat string) map[string]bool {
+	pat = strings.ToLower(strings.TrimSpace(pat))
+	s.mu.Lock()
+	var addrs []netip.Addr
+	hosts := map[netip.Addr]string{}
+	for a, e := range s.senders {
+		addrs = append(addrs, a)
+		hosts[a] = e.Host
+	}
+	s.mu.Unlock()
+	rev := s.dns.names(addrs, 1500*time.Millisecond)
+	out := map[string]bool{}
+	for _, a := range addrs {
+		for _, n := range []string{s.senderName(a), rev[a], hostPart(rev[a]), hosts[a]} {
+			if n != "" && ldGlob(pat, strings.ToLower(n)) {
+				out[a.String()] = true
+				break
+			}
+		}
+	}
 	return out
 }
 

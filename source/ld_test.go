@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"net/url"
 	"os"
 	"strings"
 	"testing"
@@ -407,4 +408,51 @@ func TestLdLzRoundTripAndDamage(t *testing.T) {
 		rnd[i] = byte(i * 131)
 	}
 	back(append([]byte(ldLzMagic), rnd...))
+}
+
+// Reverse names: 127.0.0.1 reverse-looks-up to localhost (the hosts file), 10.1.1.5 to nothing here.
+func TestReverseNamesOnSendersAndSearch(t *testing.T) {
+	loop, other := netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("10.1.1.5")
+	now := time.Now()
+	s := &ldService{store: newTestStore(t, &now), dns: newLdDNS(), senders: map[netip.Addr]*ldSender{}, refusedAt: map[netip.Addr]time.Time{}, expDNS: map[string][]netip.Prefix{}}
+	s.expNets = []ldSenderNet{{netip.MustParsePrefix("10.1.1.0/24"), "lab"}, {netip.MustParsePrefix("127.0.0.0/8"), "me"}}
+	s.handle(loop, netip.Addr{}, "udp", []byte("<14>Nov 20 10:29:58 hostA sshd[1]: from loopback"), now)
+	s.handle(other, netip.Addr{}, "udp", []byte("<14>Nov 20 10:29:58 hostB sshd[1]: from lab"), now)
+
+	// the first Senders call starts the lookups; once they are in, the next has the names
+	s.Senders()
+	s.dns.names([]netip.Addr{loop, other}, 2*time.Second)
+	got := map[string]LdSenderInfo{}
+	for _, i := range s.Senders() {
+		got[i.Addr] = i
+	}
+	if got["127.0.0.1"].RDNS != "localhost" || got["127.0.0.1"].Rev != "localhost" || got["10.1.1.5"].RDNS != "" {
+		t.Errorf("senders: %+v", got)
+	}
+
+	// a search by name: the configured name, the reverse name, the host the messages give, with wildcards; no match is nothing
+	for pat, want := range map[string]int{"localhost": 1, "LOC*": 1, "me": 1, "lab": 1, "hostb": 1, "host*": 2, "*": 2, "nobody*": 0} {
+		q := LdQuery{From: now.Add(-time.Hour).UnixMilli(), MinSev: -1, SrcName: pat}
+		a, ok := s.local(context.Background(), ldQueryMsg{Op: "search", Query: q})
+		if !ok || a.Answer == nil || len(a.Answer.Msgs) != want {
+			t.Errorf("source=%s: %v %+v", pat, ok, a.Answer)
+		}
+	}
+	// the sender's name comes with each message of a result
+	a, _ := s.local(context.Background(), ldQueryMsg{Op: "search", Query: LdQuery{From: now.Add(-time.Hour).UnixMilli(), MinSev: -1}})
+	res := s.result(LdQuery{From: now.Add(-time.Hour).UnixMilli(), MinSev: -1, Limit: 10}, []LdAnswer{*a.Answer}, nil, 1)
+	names := map[string]string{}
+	for _, m := range res.Messages {
+		names[m.Source] = m.SourceName
+	}
+	if names["127.0.0.1"] != "localhost" || names["10.1.1.5"] != "" {
+		t.Errorf("source names: %v", names)
+	}
+	// the URL form: a name is accepted, a bad one refused
+	if q, err := s.parseLdQuery(url.Values{"source": {"sw*.example.com"}}); err != nil || q.SrcName != "sw*.example.com" || q.Src != "" {
+		t.Errorf("parse name: %+v %v", q, err)
+	}
+	if _, err := s.parseLdQuery(url.Values{"source": {"a b;c"}}); err == nil {
+		t.Error("a bad source was accepted")
+	}
 }

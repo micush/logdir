@@ -1,0 +1,40 @@
+{
+  "log_level": "info",
+  "groups": [
+    {
+      "group_id": 100,
+      "interface": "eth0",
+      "vip4": "10.0.0.50/24",
+      "priority": 100,
+      "lb_method": "roundrobin",
+      "real_macs": true,
+      "key": "change-me-to-a-long-random-key"
+    }
+  ],
+  "settings": {
+    "mcp_acl": ["10.0.0.0/24"],
+    "flow": {
+      "exporters": [
+        {"name": "core-sw1", "address": "10.9.0.1"},
+        {"name": "branches", "address": "10.20.0.0/16"},
+        {"name": "fw1", "address": "fw1.example.com"}
+      ]
+    }
+  },
+  "web": {
+    "listen": ":11154",
+    "group": "logdir",
+    "pam_service": "logdir",
+    "session_idle_minutes": 30,
+    "max_failed_logins": 3,
+    "failed_login_window_minutes": 1,
+    "lockout_minutes": 15,
+    "cert_file": "",
+    "key_file": ""
+  },
+  "cluster": {
+    "listen": ":11155",
+    "self": "10.0.0.5:11155",
+    "sync_interval_sec": 5
+  }
+}

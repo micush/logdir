@@ -1,0 +1,153 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"fmt"
+	"io"
+	"net/url"
+	"os"
+	"strings"
+	"text/tabwriter"
+	"time"
+)
+
+// The command line of the log collector:
+//
+//	--logs                                  the collector on every node: what it listens on, counters, the senders
+//	--logs-search "words" [--logs-args "k=v&k=v"]
+//	                                        a search over every node; the words are those of the API (and, or, not); the arguments:
+//	                                        range=1h from= to= host=sw* program=sshd severity=err source=10.0.0.5 limit=200 oldest_first=1
+
+type ldOpArgs struct {
+	Q string `json:"q"`
+}
+
+// LdOpSearch is a search for the CLI, as the daemon builds it.
+func (m *Mgmt) LdOpSearch(a ldOpArgs) (any, error) {
+	if ldSvc == nil {
+		return nil, fmt.Errorf("no log collector in this process")
+	}
+	v, err := url.ParseQuery(a.Q)
+	if err != nil {
+		return nil, fmt.Errorf("arguments: %v", err)
+	}
+	q, err := ldSvc.parseLdQuery(v)
+	if err != nil {
+		return nil, err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), ldReportTimeout(q))
+	defer cancel()
+	return ldSvc.Search(ctx, q), nil
+}
+
+func (m *Mgmt) LdOpStatus() (any, error) {
+	if ldSvc == nil {
+		return nil, fmt.Errorf("no log collector in this process")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	st, errs := ldSvc.AllStatus(ctx)
+	sn, errs2 := ldSvc.AllSenders(ctx)
+	return map[string]any{"nodes": st, "senders": sn, "node_errors": append(errs, errs2...)}, nil
+}
+
+func runLogs(sock string, f *cliFlags) {
+	if words := *f.logsSearch; words != "" {
+		q := *f.logsArgs
+		if !strings.Contains(q, "q=") {
+			if q != "" {
+				q += "&"
+			}
+			q += "q=" + url.QueryEscape(words)
+		}
+		var res LdResult
+		decode(op(sock, "logs.search", ldOpArgs{Q: q}), &res)
+		for _, m := range res.Messages {
+			t := time.UnixMilli(m.T).Local().Format("2006-01-02 15:04:05")
+			prog := m.Program
+			if m.PID != "" {
+				prog += "[" + m.PID + "]"
+			}
+			fmt.Printf("%s %-7s %s %s: %s\n", t, m.Severity, m.Host, prog, m.Message)
+		}
+		fmt.Printf("-- %d message(s) from %d node(s), %s to %s", res.Matched, res.Nodes,
+			time.UnixMilli(res.From).Local().Format("2006-01-02 15:04"), time.UnixMilli(res.To).Local().Format("2006-01-02 15:04"))
+		if res.Duplicates > 0 {
+			fmt.Printf(", %d copy(ies) dropped", res.Duplicates)
+		}
+		fmt.Println()
+		for _, e := range res.NodeErrors {
+			fmt.Printf("NODE DID NOT ANSWER: %s: %s\n", e.Node, e.Error)
+		}
+		if res.Note != "" {
+			fmt.Println("note:", res.Note)
+		}
+		return
+	}
+	var out struct {
+		Nodes      []LdNodeStatus `json:"nodes"`
+		Senders    []LdSenderInfo `json:"senders"`
+		NodeErrors []NodeError    `json:"node_errors"`
+	}
+	decode(op(sock, "logs.status", nil), &out)
+	for _, n := range out.Nodes {
+		fmt.Printf("%s: %s; %d received (%d udp, %d tcp, %d tls), %d refused, %d dropped; %d stored in %d hour(s); %d connection(s)\n",
+			n.Node, map[bool]string{true: "collecting", false: "off"}[n.Enabled], n.Received, n.UDP, n.TCP, n.TLS, n.Refused, n.Dropped, n.Stored, n.Hours, n.Conns)
+		for _, l := range n.Listening {
+			fmt.Println("    listening on", l)
+		}
+		if n.Dir != "" {
+			fmt.Printf("    kept in %s: %s of a cap of %s; %d hour(s) removed by the retention or the cap\n", n.Dir, humanBytes(n.DirBytes), humanBytes(n.DirCap), n.CapRemoved)
+		} else if n.DirError != "" {
+			fmt.Println("    NO DISK: messages are in memory only:", n.DirError)
+		}
+		if n.WriteErrs > 0 {
+			fmt.Printf("    %d WRITE ERROR(S)\n", n.WriteErrs)
+		}
+		for _, l := range n.Failed {
+			fmt.Println("    CANNOT LISTEN on", l)
+		}
+	}
+	for _, e := range out.NodeErrors {
+		fmt.Printf("NODE DID NOT ANSWER: %s: %s\n", e.Node, e.Error)
+	}
+	if len(out.Senders) > 0 {
+		w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "SENDER\tNAME\tHOST\tVIA\tNODE\tMESSAGES\tLAST HEARD")
+		for _, e := range out.Senders {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%s ago\n", e.Addr, e.Name, e.Host, e.Via, e.Node, e.Msgs, time.Since(time.Unix(e.Last, 0)).Round(time.Second))
+		}
+		w.Flush()
+	}
+}
+
+// runLogsCat writes the plain JSON lines of each stored hour to stdout: `.jsonl` as it is, `.jsonl.lz` unpacked.  It reads files only,
+// so it works with the daemon stopped, or on a copy of a folder.  Several files are written in the order given.
+func runLogsCat(files []string) {
+	out := bufio.NewWriterSize(os.Stdout, 1<<18)
+	defer out.Flush()
+	for _, name := range files {
+		fh, err := os.Open(name)
+		if err != nil {
+			out.Flush()
+			fatal(err)
+		}
+		var r io.Reader = fh
+		if strings.HasSuffix(name, ".lz") {
+			zr, err := ldLzReader(fh)
+			if err != nil {
+				fh.Close()
+				out.Flush()
+				fatalf("%s: not a logdir hour file", name)
+			}
+			r = zr
+		}
+		_, err = io.Copy(out, r)
+		fh.Close()
+		if err != nil {
+			out.Flush()
+			fatal(err)
+		}
+	}
+}

@@ -1,0 +1,6 @@
+# /etc/pam.d/logdir — Debian / Ubuntu
+# Password check for the logdir web GUI. Group membership (default group "logdir")
+# is enforced by logdir itself; PAM only proves who the user is and that the
+# account is valid.
+@include common-auth
+@include common-account

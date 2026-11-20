@@ -157,6 +157,7 @@ type ldStore struct {
 	curHour int64
 	meta    map[int64]*ldHourMeta // by hour (unix seconds / 3600)
 	ring    []LdMsg               // the newest, oldest first
+	cache   *ldCache              // closed hours, parsed, under a memory cap
 	dirty   bool
 
 	capPct, retDays int
@@ -168,7 +169,7 @@ type ldStore struct {
 }
 
 func newLdStore(dir, node string) *ldStore {
-	return &ldStore{dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
+	return &ldStore{cache: newLdCache(), dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
 }
 
 func ldVolumeSize(dir string) (uint64, error) {
@@ -280,7 +281,38 @@ func (s *ldStore) saveMeta(h int64, m *ldHourMeta) {
 }
 
 // scanFile reads one hour's messages (the plain file, or the compressed one) in the order they were written; f returns false to stop.
+// readHour parses a whole hour (nil when it has no file).
+func (s *ldStore) readHour(h int64) []LdMsg {
+	var msgs []LdMsg
+	if !s.streamFile(h, func(m *LdMsg) bool { msgs = append(msgs, *m); return true }) {
+		return nil
+	}
+	return msgs
+}
+
+// scanFile calls f for each message of an hour until it returns false.  A closed hour comes from the cache, and goes into it when
+// it fits under the memory cap; the hour being written, and one that does not fit, is read from its file.
 func (s *ldStore) scanFile(h int64, f func(*LdMsg) bool) {
+	if s.closedHour(h) {
+		msgs, ok := s.cache.get(h)
+		if !ok {
+			if msgs = s.readHour(h); msgs == nil {
+				return
+			}
+			s.cache.put(h, msgs) // when it does not fit it is used once and let go
+		}
+		for i := range msgs {
+			if !f(&msgs[i]) {
+				return
+			}
+		}
+		return
+	}
+	s.streamFile(h, f)
+}
+
+// streamFile reads an hour's file message by message; false when there is no file.
+func (s *ldStore) streamFile(h int64, f func(*LdMsg) bool) bool {
 	var r io.Reader
 	for _, gz := range []bool{false, true} {
 		fh, err := os.Open(s.path(h, gz))
@@ -292,14 +324,14 @@ func (s *ldStore) scanFile(h int64, f func(*LdMsg) bool) {
 		if gz {
 			zr, err := ldLzReader(fh)
 			if err != nil {
-				return
+				return false
 			}
 			r = zr
 		}
 		break
 	}
 	if r == nil {
-		return
+		return false
 	}
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
@@ -307,11 +339,11 @@ func (s *ldStore) scanFile(h int64, f func(*LdMsg) bool) {
 		if len(line) > 1 {
 			var m LdMsg
 			if json.Unmarshal(line, &m) == nil && !f(&m) {
-				return
+				return true
 			}
 		}
 		if err != nil {
-			return
+			return true
 		}
 	}
 }
@@ -507,6 +539,7 @@ func (s *ldStore) enforce() {
 		s.mu.Lock()
 		delete(s.meta, f.h)
 		s.mu.Unlock()
+		s.cache.drop(f.h)
 	}
 	for _, f := range list {
 		if f.h == curH {

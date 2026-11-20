@@ -5,7 +5,7 @@ From nothing to a device's syslog in front of an assistant, on one node.
 ## 1. Install
 
 ```
-tar xzf logdir_v9.tgz && cd logdir
+tar xzf logdir_v10.tgz && cd logdir
 sudo ./install.sh --add-user "$USER"
 ```
 

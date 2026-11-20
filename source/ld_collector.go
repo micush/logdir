@@ -134,6 +134,7 @@ func (s *ldService) applyConfig() {
 	s.store.mu.Lock()
 	s.store.capPct, s.store.retDays = c.DirMaxPercent, c.RetentionDays
 	s.store.mu.Unlock()
+	s.store.cache.set(c.MemMaxPercent, 0)
 }
 
 // Start opens the store and runs the loops.
@@ -144,6 +145,7 @@ func (s *ldService) Start() {
 	s.mu.Unlock()
 	s.applyConfig()
 	s.store.Load()
+	go s.store.Warm()
 	go s.loop(ctx, 3*time.Second, func() { s.reconcile(); s.syncSenders() })
 	go s.loop(ctx, time.Second, s.store.Flush)
 	go s.loop(ctx, time.Minute, func() { s.applyConfig(); s.store.Maintain() })
@@ -692,6 +694,11 @@ type LdNodeStatus struct {
 	DirError   string   `json:"dir_error,omitempty"`
 	DirBytes   uint64   `json:"dir_bytes,omitempty"`
 	DirCap     uint64   `json:"dir_cap_bytes,omitempty"`
+	MemBytes   uint64   `json:"mem_bytes,omitempty"`     // what the hour cache holds
+	MemCap     uint64   `json:"mem_cap_bytes,omitempty"` // the most it may hold
+	MemHours   int      `json:"mem_hours,omitempty"`     // hours in it
+	CacheHits  uint64   `json:"cache_hits,omitempty"`
+	CacheMiss  uint64   `json:"cache_misses,omitempty"`
 	CapRemoved uint64   `json:"removed_hours,omitempty"` // hours deleted by the retention or the cap
 	Received   uint64   `json:"received"`
 	Bytes      uint64   `json:"bytes"`
@@ -728,6 +735,8 @@ func (s *ldService) Status() LdNodeStatus {
 	s.store.mu.Lock()
 	st.Dir, st.DirError, st.DirBytes, st.DirCap, st.CapRemoved = s.store.dir, s.store.dirErr, s.store.dirBytes, s.store.capBytes, s.store.removed
 	s.store.mu.Unlock()
+	cs := s.store.cache.stat()
+	st.MemBytes, st.MemCap, st.MemHours, st.CacheHits, st.CacheMiss = cs.Bytes, cs.Cap, cs.Hours, cs.Hits, cs.Misses
 	if s.mg != nil && s.mg.stateDir != "" {
 		st.DefaultDir = filepath.Join(s.mg.stateDir, "logs")
 	}

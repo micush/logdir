@@ -1,5 +1,20 @@
 # Changelog
 
+## [v10] - 2026-11-20 — closed hours cached in memory, under a memory cap
+
+### Added
+- **A cache of closed hours.** A search, a statistics request or an alert check reads each hour's file, decompresses it and parses every line. The parsed messages of closed hours are now kept in memory, so the next search over the same hours does none of that. It is capped like flowdir's rollups: **Configure ▸ Settings ▸ General ▸ Log collector ▸ Memory cap** (`settings.logs.mem_max_percent`, 90 unless set) is a percentage of the machine's memory, or of the container's limit when that is smaller. At the cap the oldest hours go first; an hour that does not fit is read from its file as before, so the cap costs speed only. The hour being written is never cached, and an hour removed by the retention or the disk cap leaves the cache.
+- The newest 24 closed hours are read into the cache when the daemon starts, in the background.
+- `logdir --logs` shows, for each node, the hours cached, their size against the cap, and how often a search found an hour cached or read it from disk; the same numbers are in the status (`mem_bytes`, `mem_cap_bytes`, `mem_hours`, `cache_hits`, `cache_misses`).
+
+### Verified
+- gofmt, `go vet`, the full suite (only the PAM-header update test fails in this sandbox); new tests: closed hours are cached and the second search is answered from the cache with the same messages, the hour being written is not cached, a cap too small keeps nothing and still answers, a cap for two hours is held, a removed hour leaves, and the start-up read takes the closed hours.
+- A measurement on 500,000 messages in five closed hours (a search that matches nothing, so every message is read): 2.6 s the first time, 0.26–0.30 s afterwards; 131 MB cached.
+
+### Not verified
+- On a real log volume, or under memory pressure: the cache is about 260 bytes a message here, and at the default 90 % it can use most of the machine's memory, as flowdir's rollups can. Lower the cap on a node that does other work.
+- The Settings box in a browser against a live daemon (the form was only syntax-checked).
+
 ## [v9] - 2026-11-20 — a pager on Logs ▸ Messages
 
 ### Added

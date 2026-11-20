@@ -102,6 +102,9 @@ func runLogs(sock string, f *cliFlags) {
 		} else if n.DirError != "" {
 			fmt.Println("    NO DISK: messages are in memory only:", n.DirError)
 		}
+		if n.MemCap > 0 {
+			fmt.Printf("    memory: %d hour(s) cached, %s of a cap of %s; searches found an hour cached %d time(s) and read it from disk %d time(s)\n", n.MemHours, humanBytes(n.MemBytes), humanBytes(n.MemCap), n.CacheHits, n.CacheMiss)
+		}
 		if n.WriteErrs > 0 {
 			fmt.Printf("    %d WRITE ERROR(S)\n", n.WriteErrs)
 		}

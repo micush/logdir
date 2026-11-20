@@ -54,7 +54,7 @@ One answer to an assistant is at most 1 MB by default and is cut, with a note, b
 Supported systems are Ubuntu, Debian, Fedora, RHEL, Rocky, Alma, Arch and Manjaro, and their derivatives. logdir is Linux-only (macvlan, AF_PACKET, inotify).
 
 ```
-tar xzf logdir_v9.tgz && cd logdir
+tar xzf logdir_v10.tgz && cd logdir
 sudo ./install.sh [--add-user NAME] [--no-start] [-y] [--dry-run]
 sudo logdir-uninstall [--purge]
 ```
@@ -165,6 +165,7 @@ Point a device's syslog at a **gateway address** (a VIP, a further address or an
 | `udp_port`, `tcp_port`, `tls_port` | another port; `-1` turns that listener off |
 | `senders` (Configure ▸ Senders) | the senders accepted: a `name` and an `address` (an IPv4 or IPv6 address, a network such as `10.9.0.0/16`, or a host name that DNS resolves, looked up again every minute); `"disabled": true` keeps an entry but refuses it. The narrowest network wins when entries overlap |
 | `retention_days` (Configure ▸ Settings ▸ General ▸ Log collector ▸ Keep) | delete hours older than this; 0 keeps them until the disk cap removes the oldest |
+| `mem_max_percent` (Configure ▸ Settings ▸ General ▸ Log collector ▸ Memory cap) | cap on the cache of closed hours kept in memory for searches: this percent (default 90) of the machine's memory, or of the container limit when that is smaller, oldest hour first; the hour being written is never cached. Each node applies it to its own memory |
 | `dir_max_percent` (Configure ▸ Settings ▸ General ▸ Log collector ▸ Disk cap) | cap on the folder: this percent (default 90) of the volume it is on, oldest hour first. Each node applies it to its own volume |
 | `max_line` | longest message kept, in bytes (default 8192); more is cut off |
 | `alerts` (Configure ▸ Senders ▸ Pattern alerts) | `name`, `query`, optional `host` and `min_severity` (0 to 7), `count` (default 1) and `window_min` (default 5), `disabled`; see below |

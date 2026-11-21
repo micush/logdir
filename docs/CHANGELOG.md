@@ -1,5 +1,13 @@
 # Changelog
 
+## [v18] - 2026-11-21 — Monitor ▸ Senders in alphabetical order
+
+### Changed
+- The table is sorted alphabetically by the name in its first column (numbers in order, so 10.0.0.2 comes before 10.0.0.10), then by address. Before, it followed the order the nodes listed them in.
+
+### Verified
+- `node --check`; `gofmt`, `go build`, `go vet`, `go test -race -count=1`.
+
 ## [v17] - 2026-11-21 — Monitor ▸ Senders: axis labels of the Senders heard chart
 
 ### Fixed

@@ -1,5 +1,12 @@
 # Changelog
 
+## [v24] - 2026-11-21 — Logs: opens on the last 15 minutes
+
+### Changed
+
+- **Monitor ▸ Logs** opens on **15 Min**, not 1 Hour. The other ranges are one choice away, and the page keeps the one you pick while you stay on it.
+- **The Host column in the Messages table is the sender's name**, the one the Senders page and the charts use: its name in Configure ▸ Senders, else the first part of its DNS name (`fw1-mgmt`, not the `cush` the firewall calls itself in its messages). A sender that is not in the list shows the host name its message gives. The name the message gives is in the tooltip, and a click on the host shows only that sender.
+
 ## [v23] - 2026-11-21 — Logs: Host and Address columns
 
 ### Fixed

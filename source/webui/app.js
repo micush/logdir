@@ -4365,7 +4365,7 @@
     const SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["warning=", "Warning only"], ["notice", "Notice or worse"], ["info", "Info or worse"]];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
-    const kept = { range: "1h", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25 };
+    const kept = { range: "15m", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25 };
     const SEVNAMES = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
     const count = (v) => (Number(v) || 0).toLocaleString();
     const niceMax = (v) => {
@@ -4426,12 +4426,14 @@
         ["Copy message", () => { try { navigator.clipboard.writeText(m.message); } catch (_) { /* no clipboard */ } }]].filter((it) => !(it[0] === "Only this host" && !m.host) && !(it[0] === "Only this program" && !m.program));
       return m.source ? [...own, "-", ...netToolMenu(m.source)] : own;
     }
-    // the host column: the name the message gives itself, else what the sender is called (its name in Configure ▸ Senders, else its DNS name);
-    // a message that gives none had the sender's address filled in, and the address has its own column
+    // the host column: what the sender is called (its name in Configure ▸ Senders, else the first part of its DNS name), the same name the Senders
+    // page and the charts use; a sender that is not in the list shows the host name its message gives, else its DNS name.  The name the message
+    // gives itself (a firewall calls itself "cush", the DNS says fw1-mgmt) is in the tooltip.  The address has its own column.
     function hostCell(m) {
+      const e = senders.find((x) => x.addr === m.source), nm = (e && (e.name || e.rev)) || "";
+      if (nm) return h("button", { type: "button", class: "qlink", title: "Only this sender" + (m.host && m.host !== m.source && m.host.toLowerCase() !== nm.toLowerCase() ? " (the message says its host is " + m.host + ")" : ""), onclick: () => set({ source: m.source }) }, nm);
       if (m.host && m.host !== m.source) return h("button", { type: "button", class: "qlink", title: "Only this host", onclick: () => set({ host: m.host }) }, m.host);
-      const e = senders.find((x) => x.addr === m.source), nm = (e && (e.name || e.rev)) || m.source_name || "";
-      return nm ? h("button", { type: "button", class: "qlink", title: "Only this sender", onclick: () => set({ source: m.source }) }, nm) : "–";
+      return m.source_name ? h("button", { type: "button", class: "qlink", title: "Only this sender", onclick: () => set({ source: m.source }) }, m.source_name) : "–";
     }
     function row(m, multi) {
       const prog = m.program ? h("button", { type: "button", class: "qlink", title: "Only this program", onclick: () => set({ program: m.program }) }, m.program, m.pid ? h("span", { class: "muted" }, "[" + m.pid + "]") : null) : null;

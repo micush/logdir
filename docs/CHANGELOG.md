@@ -1,5 +1,11 @@
 # Changelog
 
+## [v27] - 2026-11-21 — Logs: a word finds the sender's name
+
+### Fixed
+
+- **A plain word in the Messages filter also matches the name of the message's sender.** `fw1-mgmt` found nothing for a firewall whose messages never contain that name (they say `devname="fw1"`); it now finds that sender's messages, by the name in Configure ▸ Senders, its DNS name or the first part of it. `and`, `or` and `not` work with it as with any word.
+
 ## [v26] - 2026-11-21 — Logs: host= finds the sender's name
 
 ### Fixed

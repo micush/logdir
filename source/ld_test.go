@@ -519,3 +519,17 @@ func TestHostFilterAlsoMatchesTheSendersName(t *testing.T) {
 		t.Fatal("an hour that has no message naming the host was skipped, though the sender's messages match")
 	}
 }
+
+func TestWordsAlsoMatchTheSendersName(t *testing.T) {
+	q := LdQuery{Q: "fw1-mgmt and not drop", MinSev: -1, srcWords: map[string]string{"192.168.200.10": "cush fw1-mgmt.cush.local fw1-mgmt"}}
+	f := q.filter()
+	if !f.match(&LdMsg{Host: "cush", Src: "192.168.200.10", Msg: `devname="fw1" action="deny"`}) {
+		t.Fatal("a word did not match the name of the message's sender")
+	}
+	if f.match(&LdMsg{Host: "cush", Src: "192.168.200.10", Msg: "drop"}) {
+		t.Fatal("a not-word was ignored")
+	}
+	if f.match(&LdMsg{Host: "cush", Src: "10.0.0.9", Msg: "x"}) {
+		t.Fatal("another sender's message matched")
+	}
+}

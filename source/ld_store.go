@@ -78,8 +78,9 @@ type ldFilter struct {
 	minSev   int  // -1: any
 	sevExact bool // only this severity, not this severe or worse
 	src      string
-	hostSrc  map[string]bool // senders whose name matches the host filter: their messages match it too
-	srcSet   map[string]bool // senders picked by name: nil is no such filter, an empty set matches nothing
+	srcWords map[string]string // each sender's names: a word of the search matches them too
+	hostSrc  map[string]bool   // senders whose name matches the host filter: their messages match it too
+	srcSet   map[string]bool   // senders picked by name: nil is no such filter, an empty set matches nothing
 }
 
 func (f *ldFilter) hostOK(h string) bool { return f.host == "" || ldGlob(f.host, strings.ToLower(h)) }
@@ -119,7 +120,14 @@ func (f *ldFilter) match(m *LdMsg) bool {
 	if !(f.hostOK(m.Host) || f.hostSrc[m.Src]) || !f.progOK(m.Prog) {
 		return false
 	}
-	return len(f.expr) == 0 || f.expr.matches(strings.ToLower(m.text()))
+	if len(f.expr) == 0 {
+		return true
+	}
+	txt := strings.ToLower(m.text())
+	if w := f.srcWords[m.Src]; w != "" {
+		txt += " " + w
+	}
+	return f.expr.matches(txt)
 }
 
 // hourOK says whether an hour could hold a message the filter wants (false: skip the hour).
@@ -577,8 +585,10 @@ type LdQuery struct {
 	// hostSrc is, for a host filter, the addresses of the senders whose name matches it: the Logs page names a message by its sender, so
 	// host=fw1-mgmt finds that sender's messages even when the message calls the host something else.  Set by the node that runs the query.
 	hostSrc map[string]bool
-	Limit   int  `json:"limit"`
-	Oldest  bool `json:"oldest_first,omitempty"` // the oldest matches (default: the newest)
+	// srcWords: for a search with words, each sender's names (senderWords): a word also matches the name of the message's sender.
+	srcWords map[string]string
+	Limit    int  `json:"limit"`
+	Oldest   bool `json:"oldest_first,omitempty"` // the oldest matches (default: the newest)
 }
 
 const (
@@ -607,7 +617,7 @@ func (q *LdQuery) Validate() error {
 }
 
 func (q *LdQuery) filter() *ldFilter {
-	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet, hostSrc: q.hostSrc}
+	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet, hostSrc: q.hostSrc, srcWords: q.srcWords}
 }
 
 // LdAnswer is what one node found.

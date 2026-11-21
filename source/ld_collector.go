@@ -691,6 +691,31 @@ func (s *ldService) sendersByName(pat string) map[string]bool {
 	return out
 }
 
+// senderWords is, for each sender this node has heard, the names the Logs page calls it by (its name in Configure ▸ Senders, its DNS name and
+// the first part of that), lower case: the words of a search match them as well as the text of the message.
+func (s *ldService) senderWords() map[string]string {
+	s.mu.Lock()
+	var addrs []netip.Addr
+	for a := range s.senders {
+		addrs = append(addrs, a)
+	}
+	s.mu.Unlock()
+	rev := s.dns.names(addrs, 1500*time.Millisecond)
+	out := make(map[string]string, len(addrs))
+	for _, a := range addrs {
+		var w []string
+		for _, n := range []string{s.senderName(a), rev[a], hostPart(rev[a])} {
+			if n != "" {
+				w = append(w, strings.ToLower(n))
+			}
+		}
+		if len(w) > 0 {
+			out[a.String()] = strings.Join(w, " ")
+		}
+	}
+	return out
+}
+
 // LdNodeStatus is the state of one node's collector.
 type LdNodeStatus struct {
 	Node       string   `json:"node"`

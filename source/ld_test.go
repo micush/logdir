@@ -485,3 +485,20 @@ func TestSearchSeverityExact(t *testing.T) {
 		}
 	}
 }
+
+func TestListLimit(t *testing.T) {
+	s := &ldService{}
+	if got := s.listLimit(); got != 1000 {
+		t.Fatalf("default list limit = %d, want 1000", got)
+	}
+	for _, n := range []int{0, 100, 1000, 5000} {
+		if c := (LogsConfig{ListLimit: n}); c.Validate() != nil {
+			t.Fatalf("list_limit %d was refused", n)
+		}
+	}
+	for _, n := range []int{-1, 99, 5001} {
+		if c := (LogsConfig{ListLimit: n}); c.Validate() == nil {
+			t.Fatalf("list_limit %d was accepted", n)
+		}
+	}
+}

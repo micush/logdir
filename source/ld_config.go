@@ -38,6 +38,10 @@ type LogsConfig struct {
 	MemMaxPercent int `json:"mem_max_percent,omitempty"`
 	// RetentionDays: segments older than this are deleted (0 = keep until the disk cap removes them).
 	RetentionDays int `json:"retention_days,omitempty"`
+	// ListLimit is how many of the newest matching messages the Logs page lists (0 = the default, 1000; 100 to 5000).
+	ListLimit int `json:"list_limit,omitempty"`
+	// Follow makes the Logs page follow the newest messages as they arrive, every couple of seconds, instead of reloading every 15.
+	Follow bool `json:"follow,omitempty"`
 	// MaxLine is the longest message kept (bytes; the rest is cut off).  0 = 8192.
 	MaxLine int `json:"max_line,omitempty"`
 	// Alerts are the pattern alerts: when a search matches at least Count messages in the last WindowMin minutes (on all nodes
@@ -130,6 +134,9 @@ func (c *LogsConfig) Validate() error {
 	}
 	if c.RetentionDays < 0 || c.RetentionDays > 36500 {
 		return fmt.Errorf("logs: retention_days %d must be 0 to 36500", c.RetentionDays)
+	}
+	if c.ListLimit != 0 && (c.ListLimit < 100 || c.ListLimit > ldMaxLimit) {
+		return fmt.Errorf("logs: list_limit %d must be 100 to %d (0 = 1000)", c.ListLimit, ldMaxLimit)
 	}
 	if c.MaxLine < 0 || (c.MaxLine > 0 && (c.MaxLine < 256 || c.MaxLine > 1<<20)) {
 		return fmt.Errorf("logs: max_line %d must be 256 to 1048576", c.MaxLine)

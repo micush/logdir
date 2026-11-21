@@ -524,6 +524,8 @@ th.num, td.num { text-align: right; }
 .card > .body.flush { padding: 0; }
 .pager { display: inline-flex; align-items: center; gap: .6rem; flex-wrap: wrap; }
 .card > header.bar .grow, .qbar .grow { flex: 1; }
+.qchip.solo[aria-pressed="false"] { text-decoration: none; }
+.qchip.solo[aria-pressed="true"] { border-color: var(--c); }
 .qchip:disabled { cursor: default; opacity: 1; color: var(--text); }
 .qlink { background: none; border: 0; padding: 0; color: var(--text); cursor: pointer; font-size: inherit; text-align: left; word-break: break-all; }
 .qlink:hover { text-decoration: underline; }
@@ -540,6 +542,7 @@ tr.picked td { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 .nav-group.single .nav-chevron { visibility: hidden; }   /* Flow has nothing under it: the label stays in line with the others */
 .nav-group.single .nav-group-label.open { color: var(--text); }
 .qlegend.inline { margin: 0; }
+.body > svg + .qlegend { margin: .5rem 0 0; }
 table.qflows th:first-child, table.qflows td:first-child { width: 1.2rem; padding-right: 0; }
 .hostcharts { display: grid; grid-template-columns: repeat(auto-fit, minmax(26rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
 .hostcharts .card { margin: 0; }

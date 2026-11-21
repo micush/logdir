@@ -131,9 +131,12 @@ func (w *WebServer) handleLogSearch(rw http.ResponseWriter, r *http.Request, s *
 		jsonError(rw, http.StatusBadRequest, err.Error())
 		return
 	}
+	if r.URL.Query().Get("limit") == "" { // the Logs page does not ask: the list is as long as Configure says
+		q.Limit = ldSvc.listLimit()
+	}
 	ctx, cancel := context.WithTimeout(r.Context(), ldReportTimeout(q))
 	defer cancel()
-	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": ldSvc.Search(ctx, q)})
+	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": ldSvc.Search(ctx, q), "follow": ldSvc.config().Follow})
 }
 
 func (w *WebServer) handleLogTail(rw http.ResponseWriter, r *http.Request, s *session) {

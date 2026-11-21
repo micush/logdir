@@ -580,6 +580,7 @@ type LdQuery struct {
 const (
 	ldMaxLimit     = 5000
 	ldDefaultLimit = 200
+	ldListDefault  = 1000 // the Logs page: messages listed unless Configure says another number
 )
 
 func (q *LdQuery) Validate() error {

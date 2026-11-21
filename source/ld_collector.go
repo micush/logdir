@@ -129,6 +129,14 @@ func (s *ldService) config() LogsConfig {
 	return *dc.Settings.Logs
 }
 
+// listLimit is how many messages the Logs page lists (Configure ▸ Settings ▸ Log collector ▸ Messages listed; 1000 unless changed).
+func (s *ldService) listLimit() int {
+	if n := s.config().ListLimit; n >= 100 && n <= ldMaxLimit {
+		return n
+	}
+	return ldListDefault
+}
+
 func (s *ldService) applyConfig() {
 	c := s.config()
 	s.store.mu.Lock()

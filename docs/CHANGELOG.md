@@ -1,5 +1,28 @@
 # Changelog
 
+## [v23] - 2026-11-21 — Logs: Host and Address columns
+
+### Fixed
+
+- **The Logs page loaded no tiles, chart or sender tables in v22.** A comment added in v22 swallowed the line that stores the statistics and the sender list, so the tiles, the chart and the Busiest tables stayed empty. v22 should not be used.
+
+### Changed
+
+- **The Messages table has a Host column and an Address column.** **Address** is where the message was received from (click it to see only that sender). **Host** is the name the message gives itself or, when it gives none (a FortiGate, for one), the sender's name from Configure ▸ Senders, else its DNS name, in place of repeating the address.
+
+## [v22] - 2026-11-21 — Logs: the page's two list controls are settings
+
+### Changed
+
+- **The "messages" drop-down is gone from the Logs page.** The page lists the newest 1000 messages of the range, and that number is now **Configure ▸ Settings ▸ General ▸ Log collector ▸ Messages listed** (100 to 5000; saved for the whole cluster). The tiles and the chart still count every message in the range; the list says "newest" when the range holds more than it lists. Assistants and the command line keep their own `limit` (default 200).
+- **The Follow button is gone too.** Following new messages, every 2 seconds, is now **Follow new messages** in the same card (off unless ticked; saved for the whole cluster).
+
+## [v21] - 2026-11-21 — Senders: pick one sender in the chart
+
+### Changed
+
+- On **Monitor ▸ Senders**, the pills of the **Top senders** chart are under the chart, and a click on a pill shows that sender alone (the scale follows it); a second click on it shows them all again. The choice stays through the page's refreshes. The chart's CSV still holds every sender.
+
 ## [v20] - 2026-11-21 — Logs: the tiles' colours say what they are
 
 ### Changed

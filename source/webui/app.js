@@ -1966,6 +1966,8 @@
     { shared: true, k: "retention_days", l: "Keep", unit: "days", t: "int", min: 0, max: 36500, def: 0, hint: "0: until the disk cap removes the oldest." },
     { shared: true, k: "dir_max_percent", l: "Disk cap", unit: "%", t: "int", min: 1, max: 100, def: 90 },
     { shared: true, k: "mem_max_percent", l: "Memory cap", unit: "%", t: "int", min: 1, max: 100, def: 90, hint: "Closed hours kept in memory for searches." },
+    { shared: true, k: "list_limit", l: "Messages listed", t: "int", min: 100, max: 5000, def: 1000, hint: "On the Logs page: the newest this many." },
+    { shared: true, k: "follow", l: "Follow new messages", t: "bool", hint: "Logs page: new ones show every 2 seconds." },
     { shared: true, k: "udp_port", l: "UDP port", t: "int", min: -1, max: 65535, def: 514, hint: "-1 turns it off." },
     { shared: true, k: "tcp_port", l: "TCP port", t: "int", min: -1, max: 65535, def: 514, hint: "-1 turns it off." },
     { shared: true, k: "tls_port", l: "TLS port", t: "int", min: -1, max: 65535, def: 6514, hint: "-1 turns it off. Uses the GUI certificate." },
@@ -3061,7 +3063,7 @@
       const topo = fieldset(TOPO_FIELDS, { topology_squares_above: set.topology_squares_above });
       const topoShared = () => { const n = topo.get().topology_squares_above; return n > 0 && n !== 36 ? { topology_squares_above: n } : {}; };
       const lg = set.logs || {};
-      const logSet = fieldset(COLLECT_FIELDS, { log_dir: cfg.log_dir || "", retention_days: lg.retention_days || 0, dir_max_percent: lg.dir_max_percent || 90, mem_max_percent: lg.mem_max_percent || 90,
+      const logSet = fieldset(COLLECT_FIELDS, { log_dir: cfg.log_dir || "", retention_days: lg.retention_days || 0, dir_max_percent: lg.dir_max_percent || 90, mem_max_percent: lg.mem_max_percent || 90, list_limit: lg.list_limit || 1000, follow: !!lg.follow,
         udp_port: lg.udp_port || 514, tcp_port: lg.tcp_port || 514, tls_port: lg.tls_port || 6514 });
       // settings.logs has other fields (enabled, max_line) that this page has no boxes for: they are carried through as they were; the senders, the
       // alerts and the boxes above are written (a port or a cap at its default is not)
@@ -3080,11 +3082,11 @@
       const logsShared = () => {
         const snd = senders.get().senders || [], al = logAlerts.get().logalerts || [], v = logSet.get();
         const num = (x, def) => { x = Math.trunc(Number(x)); return Number.isFinite(x) && x !== def ? x : 0; };
-        const { senders: _s, alerts: _a, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
+        const { senders: _s, alerts: _a, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
         const pct = Number(v.dir_max_percent) > 0 && Number(v.dir_max_percent) !== 90 ? Math.min(100, Math.floor(Number(v.dir_max_percent))) : 0;
         const mpct = Number(v.mem_max_percent) > 0 && Number(v.mem_max_percent) !== 90 ? Math.min(100, Math.floor(Number(v.mem_max_percent))) : 0;
         const out = { ...rest, ...(snd.length ? { senders: snd } : {}), ...(al.length ? { alerts: al } : {}), ...(num(v.retention_days, 0) > 0 ? { retention_days: num(v.retention_days, 0) } : {}),
-          ...(pct ? { dir_max_percent: pct } : {}), ...(mpct ? { mem_max_percent: mpct } : {}), ...(num(v.udp_port, 514) ? { udp_port: num(v.udp_port, 514) } : {}), ...(num(v.tcp_port, 514) ? { tcp_port: num(v.tcp_port, 514) } : {}),
+          ...(num(v.list_limit, 1000) ? { list_limit: Math.min(5000, Math.max(100, num(v.list_limit, 1000))) } : {}), ...(v.follow ? { follow: true } : {}), ...(pct ? { dir_max_percent: pct } : {}), ...(mpct ? { mem_max_percent: mpct } : {}), ...(num(v.udp_port, 514) ? { udp_port: num(v.udp_port, 514) } : {}), ...(num(v.tcp_port, 514) ? { tcp_port: num(v.tcp_port, 514) } : {}),
           ...(num(v.tls_port, 6514) ? { tls_port: num(v.tls_port, 6514) } : {}) };
         return Object.keys(out).length ? { logs: out } : {};
       };
@@ -4023,6 +4025,7 @@
   // ── Node, Monitor  (CLI: --host) ─────────────────────────────────────────────
   // CPU, memory, disk and network use of the machine, sampled every 10 s by the daemon and
   // kept in memory for 30 days.  The picked node (top-bar Node menu) is the one shown.
+  const senderPick = { sel: null };   // the sender the Senders page's Top senders chart is narrowed to (null: all)
   const QCHARTS = {};   // the Node page's line chart, which the Senders page draws its charts with
   VIEWS.host = (() => {
     const SVGNS = "http://www.w3.org/2000/svg";
@@ -4056,7 +4059,19 @@
     let range = "1h", lastAt = 0, seq = 0;
 
     // One line chart: series = [{ label, cls, values, text(i) }]; values below 0 are gaps.
-    function lineChart(title, d, series, o) {
+    // With o.pick ({ sel }, kept by the caller so a refresh keeps it) a click on a legend pill shows that series alone, and a second
+    // click on it shows them all again.
+    function lineChart(title, d, all, o) {
+      if (!o.pick) return drawLine(title, d, all, o, null);
+      let card;
+      const make = () => {
+        const sel = all.find((s) => s.label === o.pick.sel) || null;   // the first of that name, should two series share one
+        const pick = { all, sel, set: (s) => { o.pick.sel = sel === s ? null : s.label; const nc = make(); card.replaceWith(nc); card = nc; } };
+        return drawLine(title, d, sel ? [sel] : all, o, pick);
+      };
+      return (card = make());
+    }
+    function drawLine(title, d, series, o, pick) {
       const n = d.n != null ? d.n : d.cpu.length;
       const peak = Math.max(0, ...series.flatMap((s) => s.values));
       const max = o.fixedMax || niceMax(peak, o.floor || 10);
@@ -4100,14 +4115,17 @@
         },
         onmouseleave: () => { cross.classList.add("hidden"); tip.classList.add("hidden"); dots.forEach((c) => c.classList.add("hidden")); } });
       svg.append(cross, ...dots, hit, tip);
-      const legend = series.length > 1 || o.legend ? h("div", { class: "qlegend" }, series.map((s) => h("span", { class: "qchip " + s.cls }, h("span", { class: "sw" }), s.label))) : null;
+      const legend = series.length > 1 || o.legend ? h("div", { class: "qlegend" }, (pick ? pick.all : series).map((s) => pick
+        ? h("button", { type: "button", class: "qchip solo " + s.cls, title: pick.sel === s ? "Show all" : "Show only " + s.label, "aria-pressed": pick.sel == null ? null : String(pick.sel === s), onclick: () => pick.set(s) }, h("span", { class: "sw" }), s.label)
+        : h("span", { class: "qchip " + s.cls }, h("span", { class: "sw" }), s.label))) : null;
       // the chart's numbers: one row per sample, the busiest sample of the interval beside the average where there is one; a gap is an empty cell
       const sampleRows = () => {
+        const ss = pick ? pick.all : series;
         const cell = (v) => (v < 0 ? "" : csvNum(v));
-        return [["Time (UTC)", ...series.flatMap((s) => [s.label + " (" + o.unit + ")", ...(s.peaks ? [s.label + " peak (" + o.unit + ")"] : [])])],
-          ...Array.from({ length: n }, (_, i) => [csvIso(d.start + i * d.step), ...series.flatMap((s) => [cell(s.values[i]), ...(s.peaks ? [cell(s.peaks[i])] : [])])])];
+        return [["Time (UTC)", ...ss.flatMap((s) => [s.label + " (" + o.unit + ")", ...(s.peaks ? [s.label + " peak (" + o.unit + ")"] : [])])],
+          ...Array.from({ length: n }, (_, i) => [csvIso(d.start + i * d.step), ...ss.flatMap((s) => [cell(s.values[i]), ...(s.peaks ? [cell(s.peaks[i])] : [])])])];
       };
-      return h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(title)), h("span", { class: "grow" }), csvButton(title, sampleRows)), h("div", { class: "body" }, legend, svg));
+      return h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(title)), h("span", { class: "grow" }), csvButton(title, sampleRows)), h("div", { class: "body" }, o.legendBelow ? null : legend, svg, o.legendBelow ? legend : null));
     }
 
     QCHARTS.lineChart = lineChart;
@@ -4345,10 +4363,9 @@
     };
     const RANGES = [["15m", "15 Min"], ["1h", "1 Hour"], ["6h", "6 Hours"], ["1d", "1 Day"], ["7d", "7 Days"], ["30d", "30 Days"], ["all", "All"]];
     const SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["warning=", "Warning only"], ["notice", "Notice or worse"], ["info", "Info or worse"]];
-    const LIMITS = [100, 200, 500, 1000, 5000];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
-    const kept = { range: "1h", severity: "", host: "", program: "", source: "", q: "", limit: 200, page: 0, size: 25 };
+    const kept = { range: "1h", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25 };
     const SEVNAMES = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
     const count = (v) => (Number(v) || 0).toLocaleString();
     const niceMax = (v) => {
@@ -4368,7 +4385,7 @@
       return (withDate ? d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " : "") + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds()) + "." + String(d.getMilliseconds()).padStart(3, "0");
     };
 
-    let tiles, chartBox, msgBox, hostBox, qIn, rangeSel, sevSel, limitSel, followBtn;
+    let tiles, chartBox, msgBox, hostBox, qIn, rangeSel, sevSel;
     let lastAt = 0, seq = 0, senders = [], stats = null, res = null, msgs = [], following = false, followAt = 0, followBusy = false, lastW = 0;
 
     const params = (extra) => {
@@ -4409,12 +4426,20 @@
         ["Copy message", () => { try { navigator.clipboard.writeText(m.message); } catch (_) { /* no clipboard */ } }]].filter((it) => !(it[0] === "Only this host" && !m.host) && !(it[0] === "Only this program" && !m.program));
       return m.source ? [...own, "-", ...netToolMenu(m.source)] : own;
     }
+    // the host column: the name the message gives itself, else what the sender is called (its name in Configure ▸ Senders, else its DNS name);
+    // a message that gives none had the sender's address filled in, and the address has its own column
+    function hostCell(m) {
+      if (m.host && m.host !== m.source) return h("button", { type: "button", class: "qlink", title: "Only this host", onclick: () => set({ host: m.host }) }, m.host);
+      const e = senders.find((x) => x.addr === m.source), nm = (e && (e.name || e.rev)) || m.source_name || "";
+      return nm ? h("button", { type: "button", class: "qlink", title: "Only this sender", onclick: () => set({ source: m.source }) }, nm) : "–";
+    }
     function row(m, multi) {
       const prog = m.program ? h("button", { type: "button", class: "qlink", title: "Only this program", onclick: () => set({ program: m.program }) }, m.program, m.pid ? h("span", { class: "muted" }, "[" + m.pid + "]") : null) : null;
       return h("tr", { oncontextmenu: rowMenu(messageMenu(m)), title: m.source ? "Sender " + m.source + (m.source_name ? " (" + m.source_name + ")" : "") : null },
         h("td", { class: "mono nowrap", title: m.time }, clock(m.t, showTime())),
         h("td", {}, h("span", { class: sevCls(m.severity) }, m.severity)),
-        h("td", {}, m.host ? h("button", { type: "button", class: "qlink", title: "Only this host", onclick: () => set({ host: m.host }) }, m.host) : "–"),
+        h("td", {}, hostCell(m)),
+        h("td", { class: "mono" }, m.source ? h("button", { type: "button", class: "qlink mono", title: "Only this sender", onclick: () => set({ source: m.source }) }, m.source) : "–"),
         h("td", {}, prog || "–"),
         h("td", { class: "qmsg" }, m.message),
         multi ? h("td", { class: "mono muted small" }, m.node || "") : null);
@@ -4441,7 +4466,7 @@
       pager.hidden = pageCount < 2;
       const body = list.length
         ? h("div", { class: "scroll" }, h("table", { class: "qlogs" },
-          h("thead", {}, h("tr", {}, ["Time", "Severity", "Host", "Program", "Message", multi ? "Node" : null].filter((x) => x != null).map((x) => h("th", {}, x)))),
+          h("thead", {}, h("tr", {}, ["Time", "Severity", "Host", "Address", "Program", "Message", multi ? "Node" : null].filter((x) => x != null).map((x) => h("th", {}, x)))),
           h("tbody", {}, list.map((m) => row(m, multi)))))
         : h("div", { class: "empty" }, "No message matches in this range.");
       const nodeErr = (r.node_errors || []).length ? h("span", { class: "bad-text small", title: r.node_errors.map((e) => e.node + ": " + e.error).join("\n") }, " " + r.node_errors.length + " of " + r.nodes + " nodes did not answer") : null;
@@ -4521,10 +4546,11 @@
     async function load() {
       const my = ++seq;
       try {
-        const [rep, st, sn] = await Promise.all([api("GET", "/api/logs/search?" + params({ limit: String(kept.limit) }).toString()),
+        const [rep, st, sn] = await Promise.all([api("GET", "/api/logs/search?" + params({}).toString()),
           api("GET", "/api/logs/stats?" + params({ series: "1", top: "10" }).toString()), api("GET", "/api/logs/senders")]);
         if (my !== seq) return;
         res = rep.data; msgs = res.messages || []; stats = st.data; senders = (sn.data && sn.data.senders) || [];
+        if (!!rep.follow !== following) { following = !!rep.follow; followAt = 0; }   // Configure ▸ Settings ▸ Log collector ▸ Follow new messages
         lastAt = Date.now();
         setBad("");
         drawTiles(); drawChart(); drawMessages(); drawTops();
@@ -4563,16 +4589,9 @@
         rangeSel.value = kept.range;
         sevSel = h("select", { "aria-label": "Severity", onchange: () => { kept.severity = sevSel.value; kept.page = 0; load(); } }, SEVS.map(([id, text]) => h("option", { value: id }, text)));
         sevSel.value = kept.severity;
-        limitSel = h("select", { "aria-label": "How many messages", onchange: () => { kept.limit = Number(limitSel.value); kept.page = 0; load(); } }, LIMITS.map((n) => h("option", { value: String(n) }, n + " messages")));
-        limitSel.value = String(kept.limit);
-        followBtn = h("button", { type: "button", class: "btn", "aria-pressed": "false", onclick: () => {
-          following = !following;
-          followBtn.setAttribute("aria-pressed", following ? "true" : "false");
-          if (following) { followAt = 0; followStep(); } else drawMessages();
-        } }, "Follow");
         tiles = h("div", { class: "qtiles" }); chartBox = h("div", {}); msgBox = h("div", {}); hostBox = h("div", { class: "logtops" });
         if (window.ResizeObserver) { let tm = 0; new ResizeObserver(() => { clearTimeout(tm); tm = setTimeout(() => { if (stats && Math.abs(chartBox.clientWidth - lastW) > 24) drawChart(); }, 150); }).observe(chartBox); }
-        const bar = h("div", { class: "toolbar qbar qlogbar" }, rangeSel, sevSel, limitSel, followBtn);
+        const bar = h("div", { class: "toolbar qbar qlogbar" }, rangeSel, sevSel);
         main.append(bar, tiles, h("div", { class: "hosttables flowwide" }, chartBox, msgBox, hostBox));
         drawMessages();   // so the filter box is there even when the first report fails
         load();
@@ -4669,7 +4688,7 @@
       const cls = ["t1", "t2", "t3", "t4", "t5"];
       clear(chartsEl).append(
         QCHARTS.lineChart("Messages per minute", d, [{ label: "All senders", cls: "t1", values: perMin(pts.map((p) => p.count)), text: (i) => fmt(pts[i].count / per) + " per minute" }], { unit, floor: 10, axis }),
-        QCHARTS.lineChart("Top senders", d, topS.map((c, k) => { const v = perMin(st.source_series[c.name]); return { label: nameOf(c.name), cls: cls[k], values: v, text: (i) => fmt(v[i]) + " per minute" }; }), { unit, floor: 10, axis, legend: true }),
+        QCHARTS.lineChart("Top senders", d, topS.map((c, k) => { const v = perMin(st.source_series[c.name]); return { label: nameOf(c.name), cls: cls[k], values: v, text: (i) => fmt(v[i]) + " per minute" }; }), { unit, floor: 10, axis, legend: true, legendBelow: true, pick: senderPick }),
         QCHARTS.lineChart("By severity", d, SEV_COLORS.map(([k, label, c]) => { const v = perMin((st.severity_series || {})[k] || pts.map(() => 0)); return { label, cls: c, values: v, text: (i) => fmt(v[i]) + " per minute" }; }), { unit, floor: 10, axis, legend: true }),
         QCHARTS.lineChart("Senders heard", d, [{ label: "Senders", cls: "t3", values: (st.heard || []).map(Number), text: (i) => count(st.heard[i]) + (st.heard[i] === 1 ? " sender" : " senders") }], { unit: "senders", floor: 4, axis: (v) => (Number.isInteger(v) ? v : v.toFixed(1)) }));
     }

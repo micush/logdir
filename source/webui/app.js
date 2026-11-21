@@ -4344,7 +4344,7 @@
       return el;
     };
     const RANGES = [["15m", "15 Min"], ["1h", "1 Hour"], ["6h", "6 Hours"], ["1d", "1 Day"], ["7d", "7 Days"], ["30d", "30 Days"], ["all", "All"]];
-    const SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["notice", "Notice or worse"], ["info", "Info or worse"]];
+    const SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["warning=", "Warning only"], ["notice", "Notice or worse"], ["info", "Info or worse"]];
     const LIMITS = [100, 200, 500, 1000, 5000];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
@@ -4457,12 +4457,14 @@
       const err = ["emerg", "alert", "crit", "err"].reduce((a, k) => a + (sev[k] || 0), 0);
       const from = s ? s.from / 1000 : 0;
       const live = new Set(senders.filter((e) => e.last_seen >= from).map((e) => e.addr));
-      const tile = (cls, label, value, sub) => h("div", { class: "qtile " + cls }, h("div", { class: "qv" }, value), h("div", { class: "qs" }, sub || " "), h("div", { class: "ql" }, label));
+      // a tile is a button: Messages, Errors and Warnings filter the list to that severity (Messages: any), Senders opens Monitor ▸ Senders
+      const tile = (cls, label, value, sub, title, onpick, pressed) => h("button", { type: "button", class: "qtile pick " + cls, title, "aria-label": title, "aria-pressed": pressed == null ? null : String(pressed), onclick: onpick },
+        h("div", { class: "qv" }, value), h("div", { class: "qs" }, sub || " "), h("div", { class: "ql" }, label));
       clear(tiles).append(
-        tile("t1", "Messages", s ? count(s.total) : "–", s ? "in this range" : ""),
-        tile("t2", "Errors", s ? count(err) : "–", "error or worse"),
-        tile("t3", "Warnings", s ? count(sev.warning || 0) : "–", "warning"),
-        tile("t4", "Senders", String(live.size), "sent in this range"));
+        tile("t1", "Messages", s ? count(s.total) : "–", s ? "in this range" : "", "Show messages of any severity", () => set({ severity: "" })),
+        tile("t2", "Errors", s ? count(err) : "–", "error or worse", "Show only errors or worse", () => set({ severity: "err" }), kept.severity === "err"),
+        tile("t3", "Warnings", s ? count(sev.warning || 0) : "–", "warning", "Show only warnings", () => set({ severity: "warning=" }), kept.severity === "warning="),
+        tile("t4", "Senders", String(live.size), "sent in this range", "Open Monitor ▸ Senders", () => selectTab("senders")));
     }
     // ── the chart: messages per interval ──
     function chart() {

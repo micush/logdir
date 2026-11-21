@@ -72,12 +72,13 @@ func (h *ldHourMeta) add(m *LdMsg) {
 
 // ldFilter is what a search asks of one message.
 type ldFilter struct {
-	expr   matchExpr
-	host   string // lower case; an exact host, or a leading/trailing * wildcard
-	prog   string
-	minSev int // -1: any
-	src    string
-	srcSet map[string]bool // senders picked by name: nil is no such filter, an empty set matches nothing
+	expr     matchExpr
+	host     string // lower case; an exact host, or a leading/trailing * wildcard
+	prog     string
+	minSev   int  // -1: any
+	sevExact bool // only this severity, not this severe or worse
+	src      string
+	srcSet   map[string]bool // senders picked by name: nil is no such filter, an empty set matches nothing
 }
 
 func (f *ldFilter) hostOK(h string) bool { return f.host == "" || ldGlob(f.host, strings.ToLower(h)) }
@@ -105,7 +106,7 @@ func ldGlob(p, s string) bool {
 }
 
 func (f *ldFilter) match(m *LdMsg) bool {
-	if f.minSev >= 0 && int(m.Sev) > f.minSev {
+	if f.minSev >= 0 && (int(m.Sev) > f.minSev || (f.sevExact && int(m.Sev) != f.minSev)) {
 		return false
 	}
 	if f.src != "" && m.Src != f.src {
@@ -565,7 +566,9 @@ type LdQuery struct {
 	Host   string `json:"host,omitempty"`
 	Prog   string `json:"prog,omitempty"`
 	MinSev int    `json:"min_severity"` // -1 any
-	Src    string `json:"src,omitempty"`
+	// SevExact: only messages of exactly MinSev (the web page's Warnings tile), not that severity or worse.
+	SevExact bool   `json:"sev_exact,omitempty"`
+	Src      string `json:"src,omitempty"`
 	// SrcName picks senders by name (the configured name, the reverse name or the host name; * wildcards) instead of by address: every node
 	// turns it into the addresses it knows (srcSet) when it runs the query.
 	SrcName string `json:"src_name,omitempty"`
@@ -599,7 +602,7 @@ func (q *LdQuery) Validate() error {
 }
 
 func (q *LdQuery) filter() *ldFilter {
-	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, src: q.Src, srcSet: q.srcSet}
+	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet}
 }
 
 // LdAnswer is what one node found.

@@ -1,5 +1,14 @@
 # Changelog
 
+## [v19] - 2026-11-21 — Logs: click a tile to filter by it
+
+### Added
+- **The tiles on the Logs page are buttons.** **Errors** shows only errors or worse, **Warnings** shows only warnings, **Messages** clears the severity filter, and **Senders** opens Monitor ▸ Senders. The Severity menu follows (the Errors and Warnings tiles show as pressed while they are the filter).
+- A new **Warning only** choice in the Severity menu. Until now every choice was "this severe or worse", so there was no way to see just the warnings, and the Warnings tile's count (warnings only) did not match what a warning filter listed (warnings and errors). `severity=warning=` (a trailing `=` means exactly that severity) does it in `GET /api/logs/search`, `/api/logs/stats` and the live tail; `sev_exact` carries it between the nodes. `severity=warning` still means warning or worse.
+
+### Verified
+- `gofmt`, `go build`, `go vet`, `go test -race -count=1` (new `TestSearchSeverityExact`); `node --check`; the Logs page in headless Chromium (mocked API): each tile sends the right request, the Severity menu follows, no page errors.
+
 ## [v18] - 2026-11-21 — Monitor ▸ Senders in alphabetical order
 
 ### Changed

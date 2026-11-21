@@ -456,3 +456,32 @@ func TestReverseNamesOnSendersAndSearch(t *testing.T) {
 		t.Error("a bad source was accepted")
 	}
 }
+
+// "warning=" asks for warnings only (the web page's Warnings tile), where "warning" is warnings or worse.
+func TestSearchSeverityExact(t *testing.T) {
+	now := ldNow
+	s := newTestStore(t, &now)
+	for i := 0; i < 32; i++ {
+		addAt(s, now.Add(time.Duration(i-40)*time.Minute), "sw1", "sshd", int8(i%8), fmt.Sprintf("message %d", i))
+	}
+	svc := &ldService{}
+	q, err := svc.parseLdQuery(url.Values{"severity": {"warning="}})
+	if err != nil || !q.SevExact || q.MinSev != 4 {
+		t.Fatalf("warning= parsed as %+v, %v", q, err)
+	}
+	if q, err = svc.parseLdQuery(url.Values{"severity": {"warning"}}); err != nil || q.SevExact || q.MinSev != 4 {
+		t.Fatalf("warning parsed as %+v, %v", q, err)
+	}
+	q.From, q.Limit = now.Add(-24*time.Hour).UnixMilli(), 100
+	worse := len(s.Search(context.Background(), q).Msgs)
+	q.SevExact = true
+	exact := s.Search(context.Background(), q).Msgs
+	if len(exact) != 4 || worse != 20 {
+		t.Fatalf("exact warnings %d (want 4), warning or worse %d (want 20)", len(exact), worse)
+	}
+	for _, m := range exact {
+		if m.Sev != 4 {
+			t.Fatalf("exact let through %+v", m)
+		}
+	}
+}

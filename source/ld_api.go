@@ -42,6 +42,9 @@ func (s *ldService) parseLdQuery(v url.Values) (LdQuery, error) {
 		q.Prog = strings.TrimSpace(v.Get("prog"))
 	}
 	if x := strings.TrimSpace(v.Get("severity")); x != "" {
+		if strings.HasSuffix(x, "=") { // "warning=": only warnings, not warning or worse
+			x, q.SevExact = strings.TrimSpace(strings.TrimSuffix(x, "=")), true
+		}
 		if q.MinSev = parseSevName(x); q.MinSev < 0 {
 			return q, fmt.Errorf("severity: %q is not one of emerg, alert, crit, err, warning, notice, info, debug (or 0 to 7)", x)
 		}
@@ -140,6 +143,9 @@ func (w *WebServer) handleLogTail(rw http.ResponseWriter, r *http.Request, s *se
 	v := r.URL.Query()
 	q := LdQuery{Q: strings.TrimSpace(v.Get("q")), Host: strings.TrimSpace(v.Get("host")), Prog: strings.TrimSpace(v.Get("program")), MinSev: -1}
 	if x := strings.TrimSpace(v.Get("severity")); x != "" {
+		if strings.HasSuffix(x, "=") {
+			x, q.SevExact = strings.TrimSpace(strings.TrimSuffix(x, "=")), true
+		}
 		if q.MinSev = parseSevName(x); q.MinSev < 0 {
 			jsonError(rw, http.StatusBadRequest, "severity: not a severity")
 			return

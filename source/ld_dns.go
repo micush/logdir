@@ -91,7 +91,7 @@ func (d *ldDNS) names(addrs []netip.Addr, budget time.Duration) map[netip.Addr]s
 			defer func() { <-sem }()
 			lctx, lc := context.WithTimeout(ctx, ldDNSEach)
 			defer lc()
-			names, err := net.DefaultResolver.LookupAddr(lctx, a.String())
+			names, err := reverseNames(lctx, a.String())
 			name, ttl := "", ldDNSTTL
 			if err == nil && len(names) > 0 {
 				name = strings.TrimSuffix(names[0], ".")

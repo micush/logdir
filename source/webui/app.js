@@ -4586,6 +4586,47 @@
     const count = (v) => (Number(v) || 0).toLocaleString();
     const ago = (u) => { const s = Math.max(0, Math.floor(Date.now() / 1000 - u)); return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
     const only = (addr) => { state.prefill.logs = addr; selectTab("logs"); };   // the Logs page, on that sender's messages
+    // the filter, pager and CSV button are made once (a refresh only swaps the rows, so typing in the box is not interrupted)
+    const kept = { q: "", page: 0, size: 25 };
+    let rows = [], card = null, filter, countEl, pageIn, pagesEl, pager, sizeSel, bodyEl, csv, btns;
+    const hay = (e) => [e.rev, e.name, e.rdns, e.addr, e.host, e.via, e.node].filter(Boolean).join(" ").toLowerCase();
+    const visible = () => { const flt = parseFilter(kept.q); return flt.empty ? rows : rows.filter((e) => flt.match((w) => hay(e).includes(w))); };
+    function build() {
+      const mkBtn = (label, title, to) => h("button", { type: "button", class: "btn small", title, "aria-label": title, onclick: () => { kept.page = to(); render(); } }, label);
+      btns = [mkBtn("«", "First page", () => 0), mkBtn("‹", "Previous page", () => kept.page - 1), mkBtn("›", "Next page", () => kept.page + 1), mkBtn("»", "Last page", () => 1e9)];
+      filter = h("input", { type: "text", class: "policy-filter", placeholder: "Filter senders", "aria-label": "Filter senders", autocomplete: "off", spellcheck: "false", value: kept.q,
+        oninput: () => { kept.q = filter.value; kept.page = 0; render(); } });
+      countEl = h("span", { class: "policy-count muted" }, "");
+      pageIn = h("input", { type: "number", min: "1", class: "policy-page", "aria-label": "Page number", onchange: (e) => { kept.page = (parseInt(e.target.value, 10) || 1) - 1; render(); } });
+      pagesEl = h("span", { class: "muted" }, "");
+      pager = h("span", { class: "policy-pager" }, btns[0], btns[1], pageIn, pagesEl, btns[2], btns[3]);
+      sizeSel = h("select", { "aria-label": "Senders per page", onchange: (e) => { kept.size = Number(e.target.value); kept.page = 0; render(); } },
+        [25, 50, 100, 250, 500].map((n) => h("option", { value: String(n) }, n + " per page")));
+      sizeSel.value = String(kept.size);
+      csv = csvButton("Log senders", () => [["Sender", "Name", "DNS name", "Host", "Via", "First seen (UTC)", "Last seen (UTC)", "Messages", "Bytes", "Node"],
+        ...visible().map((e) => [e.addr, e.name || "", e.rdns || "", e.host || "", e.via || "", csvIso(e.first_seen), csvIso(e.last_seen), e.messages, e.bytes, e.node || ""])]);
+      bodyEl = h("div", { class: "body flush" });
+      card = h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Senders")), filter, countEl, h("span", { class: "grow" }), pager, sizeSel, csv), bodyEl);
+      return card;
+    }
+    function render() {
+      const vis = visible(), size = kept.size, n = Math.max(1, Math.ceil(vis.length / size));
+      kept.page = Math.min(Math.max(kept.page, 0), n - 1);
+      const from = kept.page * size, list = vis.slice(from, from + size), filtered = vis.length !== rows.length;
+      countEl.textContent = vis.length ? (from + 1) + "–" + Math.min(from + size, vis.length) + " of " + vis.length + (filtered ? " (filtered from " + rows.length + ")" : "") : (filtered ? "0 of " + rows.length : "");
+      pager.hidden = n < 2;
+      pageIn.value = String(kept.page + 1); pageIn.max = String(n); pagesEl.textContent = "of " + n;
+      btns[0].disabled = btns[1].disabled = kept.page === 0;
+      btns[2].disabled = btns[3].disabled = kept.page >= n - 1;
+      csv.hidden = !vis.length;
+      clear(bodyEl).append(list.length
+        ? h("div", { class: "scroll" }, h("table", {},
+          h("thead", {}, h("tr", {}, ["Sender", "Host", "Via", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
+          h("tbody", {}, list.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => only(e.addr)], "-", ...netToolMenu(e.addr)]) },
+            h("td", { title: [e.rdns ? "DNS name: " + e.rdns : "", e.name && e.name !== e.rev ? "Senders entry: " + e.name : ""].filter(Boolean).join("\n") }, (e.rev || e.name) ? (e.rev || e.name) + " " : "", h("span", { class: (e.rev || e.name) ? "muted small mono" : "mono" }, e.addr)), h("td", {}, e.host || "–"), h("td", {}, e.via || "–"),
+            h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))
+        : h("div", { class: "empty" }, rows.length ? "No sender matches." : "No sender has sent anything yet."));
+    }
     function draw(senders) {
       // one row per sender: a sender heard by two nodes (its messages move with the active gateway) is one, with the messages added up and the nodes listed
       const by = new Map();
@@ -4597,19 +4638,12 @@
         if (!m.name && e.name) m.name = e.name;
         if (!m.host && e.host) m.host = e.host;
         if (!m.rdns && e.rdns) m.rdns = e.rdns;
+        if (!m.rev && e.rev) m.rev = e.rev;
         if (e.node && !m.nodes.includes(e.node)) m.nodes.push(e.node);
       }
-      const rows = [...by.values()].map((e) => ({ ...e, node: e.nodes.join(", ") }));
-      const body = rows.length
-        ? h("div", { class: "scroll" }, h("table", {},
-          h("thead", {}, h("tr", {}, ["Sender", "Host", "Via", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
-          h("tbody", {}, rows.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => only(e.addr)], "-", ...netToolMenu(e.addr)]) },
-            h("td", { title: [e.rdns ? "DNS name: " + e.rdns : "", e.name && e.name !== e.rev ? "Senders entry: " + e.name : ""].filter(Boolean).join("\n") }, (e.rev || e.name) ? (e.rev || e.name) + " " : "", h("span", { class: (e.rev || e.name) ? "muted small mono" : "mono" }, e.addr)), h("td", {}, e.host || "–"), h("td", {}, e.via || "–"),
-            h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))
-        : h("div", { class: "empty" }, "No sender has sent anything yet.");
-      clear(box).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Senders")), h("span", { class: "grow" }),
-        rows.length ? csvButton("Log senders", () => [["Sender", "Name", "DNS name", "Host", "Via", "First seen (UTC)", "Last seen (UTC)", "Messages", "Bytes", "Node"],
-          ...rows.map((e) => [e.addr, e.name || "", e.rdns || "", e.host || "", e.via || "", csvIso(e.first_seen), csvIso(e.last_seen), e.messages, e.bytes, e.node || ""])]) : null), h("div", { class: "body flush" }, body)));
+      rows = [...by.values()].map((e) => ({ ...e, node: e.nodes.join(", ") }));
+      if (!card) box.append(build());
+      render();
     }
     async function load() {
       const my = ++seq;
@@ -4623,7 +4657,7 @@
     }
     return {
       mount(main) {
-        bad = h("div", { "aria-live": "polite" }); box = h("div", {});
+        bad = h("div", { "aria-live": "polite" }); box = h("div", {}); card = null;
         main.append(bad, box);
         load();
       },

@@ -1,5 +1,21 @@
 # Changelog
 
+## [v13] - 2026-11-20 — reverse lookups that find what `host` finds; Monitor ▸ Senders filter and pager
+
+### Fixed
+- **A reverse lookup found no name where `host` did** (192.168.5.11 → `media1.cush.local`, shown as "no reverse (PTR) record" in Lookup, and the sender kept its entry name). Go's resolver may go through the C library (nsswitch, systemd-resolved, mDNS modules), which gives nothing on some hosts. Every reverse lookup (sender names, the Lookup and Traceroute dialogs, the message tooltip, search by sender name) now tries that, then Go's own resolver, then a plain PTR query (no EDNS, UDP then TCP) to the nameservers in `/etc/resolv.conf`, as `host` does. Only a server's "no such record" is kept for 30 minutes (v12).
+- v12 shipped with the Senders page and the retry rule only; this release carries the lookup fix itself.
+
+### Added
+- **Monitor ▸ Senders has a filter box and a pager** (**« ‹ page › »**, a page box and **per page**, 25 to 500, **25 by default**). The filter matches the name, address, host, format or node; a new filter goes back to page 1; the refresh keeps the filter, the page and the focus. The CSV holds the filtered rows. Help topic updated.
+
+### Verified
+- `node --check`; gofmt, `go vet`, `go test -race -count=1 ./...`, `CGO_ENABLED=0` vet and tests, cross-builds for linux/amd64, arm64, arm, 386 and riscv64. New tests: PTR names for IPv4 and IPv6, a fake DNS server answering a compressed PTR and a not-found, and the answer parser on every truncation of a reply and a self-pointing name.
+- Monitor ▸ Senders in headless Chromium against a mocked API with 60 senders: 25 rows, `1–25 of 60`, filter `host5` gives 6 rows, next page `26–50 of 60`, the page held across the 5 s refresh, no page errors.
+
+### Not verified
+- Against the real DNS server behind your cluster: whether the fallback finds `media1.cush.local` there was not run; the cause on that host (C library path versus Go) was not confirmed. Light and dark themes of the Senders card were not looked at.
+
 ## [v12] - 2026-11-20 — a sender is named by the host part of its reverse DNS name
 
 ### Changed

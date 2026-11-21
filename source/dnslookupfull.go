@@ -33,7 +33,7 @@ func lookupFull(q string) (*LookupFull, error) {
 	var b strings.Builder
 	if name == "" {
 		r.Kind = "address"
-		names, err := net.DefaultResolver.LookupAddr(ctx, ip.String())
+		names, err := reverseNames(ctx, ip.String())
 		sort.Strings(names)
 		if err != nil || len(names) == 0 {
 			fmt.Fprintf(&b, "No reverse (PTR) record for %s", ip)

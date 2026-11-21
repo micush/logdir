@@ -791,9 +791,9 @@ const LOGDIR_HELP = {
     body: [
       "Who is sending syslog to the cluster. One row to a sender: when a sender's messages move to another node with its gateway, the two nodes' counts are added up and both nodes are listed.",
       ["h", "What you can do here"],
-      ["ul", ["See each sender's name, the host name its messages give, how it sends (UDP, TCP or TLS), when it was last heard and how many messages it sent.", "Right-click a sender for **Only this sender** (its messages on the Logs page) and Ping, Traceroute, Scan, Lookup and Whois.", "Download the table as a CSV file."]],
+      ["ul", ["See each sender's name, the host name its messages give, how it sends (UDP, TCP or TLS), when it was last heard and how many messages it sent.", "Right-click a sender for **Only this sender** (its messages on the Logs page) and Ping, Traceroute, Scan, Lookup and Whois.", "Type in the **Filter senders** box to see only the senders whose name, address, host, format or node holds every word typed.", "Download the table (the filtered rows) as a CSV file."]],
       ["h", "Reading the table"],
-      ["ul", ["**Sender**: the name of its Configure ▸ Senders entry, or the name its address reverse-looks-up to in DNS (looked up in the background, kept for 30 minutes), then its address. Hover for the DNS name.", "A row is dimmed when the sender has been silent for 10 minutes.", "The page refreshes by itself."]],
+      ["ul", ["**Sender**: the host part of the name its address reverse-looks-up to in DNS (`sw1` for `sw1.example.com`; looked up in the background, kept for 30 minutes), or the name of its Configure ▸ Senders entry when there is none, then its address. Hover for the DNS name.", "A row is dimmed when the sender has been silent for 10 minutes.", "The list is paged: **« ‹ page › »** and **per page** (25 to 500, 25 unless you change it). A new filter starts at page 1.", "The page refreshes by itself."]],
       ["cli", "logdir --logs   (the collector on every node: what it listens on, counters, the senders)\nGET /api/logs/senders   (the same list as JSON)"],
     ],
   },

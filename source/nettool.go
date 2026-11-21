@@ -388,7 +388,7 @@ func (m *mtrRaw) resolve(n int, addr string) {
 	netToolRDNS <- struct{}{}
 	defer func() { <-netToolRDNS }()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	names, _ := net.DefaultResolver.LookupAddr(ctx, addr)
+	names, _ := reverseNames(ctx, addr)
 	cancel()
 	if len(names) == 0 {
 		return

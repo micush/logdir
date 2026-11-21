@@ -61,7 +61,7 @@ func hostLookup(q string) (LookupResult, error) {
 	r := LookupResult{Query: q}
 	if a, err := netip.ParseAddr(host); err == nil {
 		r.Kind = "name"
-		names, err := net.DefaultResolver.LookupAddr(ctx, a.String())
+		names, err := reverseNames(ctx, a.String())
 		if err != nil || len(names) == 0 {
 			r.Error = "no reverse (PTR) record for " + a.String()
 			return r, nil

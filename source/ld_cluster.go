@@ -290,18 +290,23 @@ func (s *ldService) result(q LdQuery, parts []LdAnswer, errs []NodeError, n int)
 
 // LdStatsResult is the cluster-wide counts.
 type LdStatsResult struct {
-	From       int64             `json:"from"`
-	To         int64             `json:"to"`
-	Nodes      int               `json:"nodes"`
-	NodeErrors []NodeError       `json:"node_errors,omitempty"`
-	Total      uint64            `json:"total"`
-	BySeverity map[string]uint64 `json:"by_severity"`
-	TopHosts   []LdCount         `json:"top_hosts,omitempty"`
-	TopProgs   []LdCount         `json:"top_programs,omitempty"`
-	Step       int64             `json:"step_s,omitempty"`
-	Series     []LdPoint         `json:"series,omitempty"`
-	Partial    bool              `json:"partial,omitempty"`
-	Note       string            `json:"note,omitempty"`
+	From       int64               `json:"from"`
+	To         int64               `json:"to"`
+	Nodes      int                 `json:"nodes"`
+	NodeErrors []NodeError         `json:"node_errors,omitempty"`
+	Total      uint64              `json:"total"`
+	BySeverity map[string]uint64   `json:"by_severity"`
+	TopHosts   []LdCount           `json:"top_hosts,omitempty"`
+	TopProgs   []LdCount           `json:"top_programs,omitempty"`
+	Step       int64               `json:"step_s,omitempty"`
+	Series     []LdPoint           `json:"series,omitempty"`
+	Sources    int                 `json:"sources,omitempty"`         // how many different senders the messages came from
+	TopSources []LdCount           `json:"top_sources,omitempty"`     // the busiest senders (by address)
+	SrcSeries  map[string][]uint64 `json:"source_series,omitempty"`   // the busiest senders' counts per bucket, one entry per point of Series
+	SevSeries  map[string][]uint64 `json:"severity_series,omitempty"` // "info", "warning" and "error" counts per bucket, as SrcSeries
+	Heard      []uint64            `json:"heard,omitempty"`           // how many different senders were heard in each bucket (the busiest ldSrcSeriesMax per node)
+	Partial    bool                `json:"partial,omitempty"`
+	Note       string              `json:"note,omitempty"`
 }
 
 type LdCount struct {
@@ -339,6 +344,7 @@ func (s *ldService) Stats(ctx context.Context, q LdQuery, step int64, top int) L
 	reps, errs, n := s.fan(ctx, ldQueryMsg{Op: "stats", Query: q, Step: step})
 	res := LdStatsResult{From: q.From, To: q.To, Nodes: n, NodeErrors: errs, BySeverity: map[string]uint64{}, Step: step}
 	hosts, progs, series := map[string]uint64{}, map[string]uint64{}, map[int64]uint64{}
+	srcs, srcSer, sevSer := map[string]uint64{}, map[string]map[int64]uint64{}, [3]map[int64]uint64{{}, {}, {}}
 	for _, r := range reps {
 		if r.Stats == nil {
 			continue
@@ -359,14 +365,60 @@ func (s *ldService) Stats(ctx context.Context, q LdQuery, step int64, top int) L
 		for k, v := range r.Stats.Series {
 			series[k] += v
 		}
+		for k, v := range r.Stats.BySrc {
+			srcs[k] += v
+		}
+		for k, m := range r.Stats.SrcSer {
+			if srcSer[k] == nil {
+				srcSer[k] = map[int64]uint64{}
+			}
+			for t, v := range m {
+				srcSer[k][t] += v
+			}
+		}
+		for i, m := range r.Stats.SevSer {
+			for t, v := range m {
+				sevSer[i][t] += v
+			}
+		}
 	}
+	res.Sources = len(srcs)
+	res.TopSources = topCounts(srcs, 50)
 	if top <= 0 {
 		top = 20
 	}
 	res.TopHosts, res.TopProgs = topCounts(hosts, top), topCounts(progs, top)
 	if step > 0 {
+		var ts []int64
 		for t := q.From / 1000 / step * step; t <= q.To/1000; t += step {
 			res.Series = append(res.Series, LdPoint{t, series[t]})
+			ts = append(ts, t)
+		}
+		res.SrcSeries = map[string][]uint64{}
+		for _, c := range res.TopSources {
+			if m := srcSer[c.Name]; m != nil {
+				col := make([]uint64, len(ts))
+				for i, t := range ts {
+					col[i] = m[t]
+				}
+				res.SrcSeries[c.Name] = col
+			}
+		}
+		res.SevSeries = map[string][]uint64{}
+		for i, name := range []string{"info", "warning", "error"} {
+			col := make([]uint64, len(ts))
+			for j, t := range ts {
+				col[j] = sevSer[i][t]
+			}
+			res.SevSeries[name] = col
+		}
+		res.Heard = make([]uint64, len(ts))
+		for j, t := range ts {
+			for _, m := range srcSer {
+				if m[t] > 0 {
+					res.Heard[j]++
+				}
+			}
 		}
 	}
 	if len(errs) > 0 {

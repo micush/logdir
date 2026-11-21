@@ -354,7 +354,7 @@
   const NAV_GROUPS = [
     ["Configure", [["cfg_general", "Settings"], ["cfg_groups", "Gateways"], ["cfg_mcp", "MCP"], ["cfg_privacy", "Privacy"], ["cfg_senders", "Senders"], ["cfg_web", "Web GUI"], ["cfg_monitoring", "Monitoring"], ["cfg_alerts", "Alerts"], ["cfg_backup", "Backup"], ["anycast", "Anycast"], ["users", "Users"]]],
     ["Operate", [["node", "Node"], ["cluster", "Cluster"], ["anycastop", "Anycast"], ["scheduler", "Scheduler"], ["history", "History"], ["updates", "Upgrade"]]],
-    ["Monitor", [["mcpusage", "MCP"], ["host", "Node"], ["gateways", "Gateways"], ["nodes", "Cluster"], ["senders", "Senders"], ["anycaststatus", "Anycast"], ["alerts", "Alerts"], ["capture", "Capture"], ["log", "Log"]]],
+    ["Monitor", [["senders", "Senders"], ["mcpusage", "MCP"], ["host", "Node"], ["gateways", "Gateways"], ["nodes", "Cluster"], ["anycaststatus", "Anycast"], ["alerts", "Alerts"], ["capture", "Capture"], ["log", "Log"]]],
   ];
   const TABS = [["logs", LOGS], ["topology", TOPO]].concat(NAV_GROUPS.flatMap(([, items]) => items));
   const groupOf = (id) => (id === "logs" ? LOGS : id === "topology" ? TOPO : (NAV_GROUPS.find(([, items]) => items.some(([i]) => i === id)) || [null])[0]);
@@ -4023,6 +4023,7 @@
   // ── Node, Monitor  (CLI: --host) ─────────────────────────────────────────────
   // CPU, memory, disk and network use of the machine, sampled every 10 s by the daemon and
   // kept in memory for 30 days.  The picked node (top-bar Node menu) is the one shown.
+  const QCHARTS = {};   // the Node page's line chart, which the Senders page draws its charts with
   VIEWS.host = (() => {
     const SVGNS = "http://www.w3.org/2000/svg";
     const sv = (tag, attrs, ...kids) => {
@@ -4056,7 +4057,7 @@
 
     // One line chart: series = [{ label, cls, values, text(i) }]; values below 0 are gaps.
     function lineChart(title, d, series, o) {
-      const n = d.cpu.length;
+      const n = d.n != null ? d.n : d.cpu.length;
       const peak = Math.max(0, ...series.flatMap((s) => s.values));
       const max = o.fixedMax || niceMax(peak, o.floor || 10);
       const W = 620, H = 230, L = axisMargin([0, 1, 2, 3, 4].map((g) => o.axis((max * g) / 4)), 62), R = 12, T = 12, B = 28, pw = W - L - R, ph = H - T - B;
@@ -4108,6 +4109,8 @@
       };
       return h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(title)), h("span", { class: "grow" }), csvButton(title, sampleRows)), h("div", { class: "body" }, legend, svg));
     }
+
+    QCHARTS.lineChart = lineChart;
 
     function draw(d) {
       const n = d.now;
@@ -4582,7 +4585,11 @@
   // Who is sending syslog to the cluster: one row to a sender, its messages added up across the nodes that heard it.
   VIEWS.senders = (() => {
     const REFRESH_MS = 5000;
+    const RANGES = [["1h", "Last Hour"], ["1d", "Last Day"], ["7d", "Last Week"], ["30d", "Last Month"], ["custom", "Custom"]];
+    const RANGE_WORDS = { "1h": "last hour", "1d": "last day", "7d": "last week", "30d": "last month", custom: "this range" };
+    const SEV_COLORS = [["info", "Debug, info, notice", "t6"], ["warning", "Warning", "t4"], ["error", "Error or worse", "t8"]];   // green, amber, red
     let box, bad, seq = 0, lastAt = 0;
+    let range = "1h", rangeBtns, fromIn, toIn, customRow, tilesEl, chartsEl, stats = null, statsAt = 0, statsSeq = 0;
     const count = (v) => (Number(v) || 0).toLocaleString();
     const ago = (u) => { const s = Math.max(0, Math.floor(Date.now() / 1000 - u)); return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
     const only = (addr) => { state.prefill.logs = addr; selectTab("logs"); };   // the Logs page, on that sender's messages
@@ -4629,6 +4636,64 @@
             h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))
         : h("div", { class: "empty" }, rows.length ? "No sender matches." : "No sender has sent anything yet."));
     }
+    const nameOf = (addr) => { const e = rows.find((x) => x.addr === addr); return (e && (e.rev || e.name || e.host)) || addr; };
+    // the charts and tiles are not worth a fresh scan of the stored messages every 5 s: a day or more is read once a minute
+    const statsEvery = () => (range === "1h" ? 15000 : 60000);
+    const rate = (v) => (v >= 100 ? Math.round(v) : v >= 10 ? v.toFixed(1) : v.toFixed(2).replace(/0$/, "")) + "/s";
+    function drawStats() {
+      if (!tilesEl) return;
+      const st = stats;
+      if (!st) { clear(tilesEl); clear(chartsEl); return; }
+      const secs = Math.max(1, (st.to - st.from) / 1000), pts = st.series || [], step = st.step_s || 60, per = step / 60;
+      const tile = (cls, label, value, sub, title) => h("div", { class: "qtile qtrunc " + cls, title: title || null }, h("div", { class: "qv trunc" }, value), h("div", { class: "qs trunc" }, sub || "\u00a0"), h("div", { class: "ql" }, label));
+      const peak = pts.reduce((m, p) => Math.max(m, p.count), 0) / step;
+      const errs = ["emerg", "alert", "crit", "err"].reduce((a, k) => a + ((st.by_severity || {})[k] || 0), 0);
+      const silent = rows.filter((e) => Date.now() / 1000 - e.last_seen > 600);
+      const top = (st.top_sources || [])[0];
+      clear(tilesEl).append(
+        tile("t1", "Senders heard", count(st.sources || 0), "of " + count(rows.length) + " known"),
+        tile("t3", "Message rate", rate(st.total / secs), "peak " + rate(peak)),
+        tile("t2", "Messages", count(st.total), RANGE_WORDS[range]),
+        tile(errs ? "t8" : "t6", "Errors or worse", st.total ? (errs / st.total * 100).toFixed(errs / st.total < 0.1 ? 1 : 0) + "%" : "–", count(errs) + " of " + count(st.total)),
+        tile(silent.length ? "t4" : "t6", "Silent", count(silent.length), silent.length ? "none for 10 min" : "all heard in 10 min", silent.map((e) => e.rev || e.name || e.addr).join(", ")),
+        tile("t5", "Busiest", top ? nameOf(top.name) : "–", top && st.total ? Math.round(top.count / st.total * 100) + "% of messages" : "", top ? nameOf(top.name) + " (" + top.name + ")" : ""));
+      if (!pts.length) { clear(chartsEl).append(h("div", { class: "empty" }, "No messages in this range.")); return; }
+      const d = { n: pts.length, start: pts[0].t, step, from: st.from / 1000, to: st.to / 1000 };
+      const perMin = (a) => a.map((c) => c / per);
+      const fmt = (v) => (v >= 100 ? Math.round(v) : v.toFixed(v < 10 ? 1 : 0)).toLocaleString();
+      const unit = "messages per minute", axis = (v) => (Number.isInteger(v) ? v : v.toFixed(1)).toLocaleString();
+      const topS = (st.top_sources || []).filter((c) => (st.source_series || {})[c.name]).slice(0, 5);
+      const cls = ["t1", "t2", "t3", "t4", "t5"];
+      clear(chartsEl).append(
+        QCHARTS.lineChart("Messages per minute", d, [{ label: "All senders", cls: "t1", values: perMin(pts.map((p) => p.count)), text: (i) => fmt(pts[i].count / per) + " per minute" }], { unit, floor: 10, axis }),
+        QCHARTS.lineChart("Top senders", d, topS.map((c, k) => { const v = perMin(st.source_series[c.name]); return { label: nameOf(c.name), cls: cls[k], values: v, text: (i) => fmt(v[i]) + " per minute" }; }), { unit, floor: 10, axis, legend: true }),
+        QCHARTS.lineChart("By severity", d, SEV_COLORS.map(([k, label, c]) => { const v = perMin((st.severity_series || {})[k] || pts.map(() => 0)); return { label, cls: c, values: v, text: (i) => fmt(v[i]) + " per minute" }; }), { unit, floor: 10, axis, legend: true }),
+        QCHARTS.lineChart("Senders heard", d, [{ label: "Senders", cls: "t3", values: (st.heard || []).map(Number), text: (i) => count(st.heard[i]) + (st.heard[i] === 1 ? " sender" : " senders") }], { unit: "senders", floor: 4, axis: (v) => Math.round(v) }));
+    }
+    async function loadStats() {
+      const my = ++statsSeq;
+      try {
+        let qs = "range=" + range;
+        if (range === "custom") {
+          const a = new Date(fromIn.value), b = new Date(toIn.value);
+          if (isNaN(a) || isNaN(b) || a >= b) throw new Error("Pick a start that is before the end.");
+          qs = "from=" + Math.floor(a / 1000) + "&to=" + Math.floor(b / 1000);
+        }
+        const r = await api("GET", "/api/logs/stats?" + qs + "&series=1&top=20");
+        if (my !== statsSeq) return;
+        statsAt = Date.now(); stats = r.data; drawStats();
+      } catch (e) { if (my === statsSeq) { stats = null; clear(tilesEl); fail(clear(chartsEl))(e); } }
+    }
+    function setRange(r) {
+      range = r;
+      for (const [id, b] of rangeBtns) b.setAttribute("aria-pressed", id === r ? "true" : "false");
+      customRow.classList.toggle("hidden", r !== "custom");
+      if (r === "custom" && !fromIn.value) {
+        const f = (d) => new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
+        toIn.value = f(new Date()); fromIn.value = f(new Date(Date.now() - 6 * 3600 * 1000));
+      }
+      if (r !== "custom") loadStats();
+    }
     function draw(senders) {
       // one row per sender: a sender heard by two nodes (its messages move with the active gateway) is one, with the messages added up and the nodes listed
       const by = new Map();
@@ -4646,6 +4711,7 @@
       rows = [...by.values()].map((e) => ({ ...e, node: e.nodes.join(", ") }));
       if (!card) box.append(build());
       render();
+      if (stats) drawStats();   // the names and the silent count come from this list
     }
     async function load() {
       const my = ++seq;
@@ -4656,12 +4722,21 @@
         clear(bad);
         draw((r.data && r.data.senders) || []);
       } catch (e) { fail(bad)(e); }
+      if (range !== "custom" && Date.now() - statsAt >= statsEvery()) loadStats();
     }
     return {
       mount(main) {
-        bad = h("div", { "aria-live": "polite" }); box = h("div", {}); card = null;
-        main.append(bad, box);
+        bad = h("div", { "aria-live": "polite" }); box = h("div", {}); card = null; stats = null; statsAt = 0;
+        rangeBtns = new Map(RANGES.map(([id, label]) => [id, h("button", { type: "button", class: "seg", "aria-pressed": id === range ? "true" : "false", onclick: () => setRange(id) }, label)]));
+        fromIn = h("input", { type: "datetime-local", "aria-label": "From" });
+        toIn = h("input", { type: "datetime-local", "aria-label": "To" });
+        customRow = h("span", { class: "qcustom hidden" }, fromIn, " to ", toIn,
+          h("button", { class: "btn", type: "button", onclick: loadStats }, "Apply"), h("span", { class: "muted small" }, " only the last 30 days exist"));
+        const bar = h("div", { class: "toolbar qbar" }, h("span", { class: "segs", role: "group", "aria-label": "Time range" }, [...rangeBtns.values()]), customRow);
+        tilesEl = h("div", { class: "qtiles" }); chartsEl = h("div", { class: "hostcharts" });
+        main.append(bad, bar, tilesEl, chartsEl, box);
         load();
+        setRange(range);
       },
       async poll() { if (Date.now() - lastAt >= REFRESH_MS) await load(); },
     };

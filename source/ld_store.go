@@ -708,20 +708,43 @@ func (s *ldStore) Tail(q LdQuery) LdAnswer {
 
 // LdStatsAnswer counts what matches: by severity, by host, by program and per bucket.
 type LdStatsAnswer struct {
-	Node    string            `json:"node"`
-	Total   uint64            `json:"total"`
-	BySev   [8]uint64         `json:"by_severity"`
-	ByHost  map[string]uint64 `json:"by_host,omitempty"`
-	ByProg  map[string]uint64 `json:"by_program,omitempty"`
-	Step    int64             `json:"step_s"`
-	Series  map[int64]uint64  `json:"series,omitempty"` // bucket start (seconds) -> count
-	Scanned uint64            `json:"scanned"`
-	Partial bool              `json:"partial,omitempty"`
+	Node    string                      `json:"node"`
+	Total   uint64                      `json:"total"`
+	BySev   [8]uint64                   `json:"by_severity"`
+	ByHost  map[string]uint64           `json:"by_host,omitempty"`
+	ByProg  map[string]uint64           `json:"by_program,omitempty"`
+	Step    int64                       `json:"step_s"`
+	Series  map[int64]uint64            `json:"series,omitempty"`          // bucket start (seconds) -> count
+	BySrc   map[string]uint64           `json:"by_source,omitempty"`       // the address each message came from -> count
+	SrcSer  map[string]map[int64]uint64 `json:"source_series,omitempty"`   // per sender (at most ldSrcSeriesMax of them), as Series
+	SevSer  [3]map[int64]uint64         `json:"severity_series,omitempty"` // info or less severe, warning, error or worse, as Series
+	Scanned uint64                      `json:"scanned"`
+	Partial bool                        `json:"partial,omitempty"`
+}
+
+// ldSrcSeriesMax is how many senders get a time series of their own in one node's stats (the totals count them all).
+const ldSrcSeriesMax = 500
+
+// ldSevClass is the class of a severity for the severity chart: 0 info or less severe (notice, info, debug), 1 warning, 2 error or worse.
+func ldSevClass(sev int8) int {
+	switch {
+	case sev <= 3:
+		return 2
+	case sev == 4:
+		return 1
+	}
+	return 0
 }
 
 func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswer {
 	f := q.filter()
-	r := LdStatsAnswer{Node: s.node, ByHost: map[string]uint64{}, ByProg: map[string]uint64{}, Step: step, Series: map[int64]uint64{}}
+	r := LdStatsAnswer{Node: s.node, ByHost: map[string]uint64{}, ByProg: map[string]uint64{}, Step: step, Series: map[int64]uint64{}, BySrc: map[string]uint64{}}
+	if step > 0 {
+		r.SrcSer = map[string]map[int64]uint64{}
+		for i := range r.SevSer {
+			r.SevSer[i] = map[int64]uint64{}
+		}
+	}
 	to := q.To
 	if to == 0 {
 		to = s.now().UnixMilli()
@@ -766,8 +789,21 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			if m.Prog != "" && (len(r.ByProg) < 5000 || r.ByProg[m.Prog] > 0) {
 				r.ByProg[m.Prog]++
 			}
+			if len(r.BySrc) < 5000 || r.BySrc[m.Src] > 0 {
+				r.BySrc[m.Src]++
+			}
 			if step > 0 {
-				r.Series[(m.T/1000)/step*step]++
+				b := (m.T / 1000) / step * step
+				r.Series[b]++
+				r.SevSer[ldSevClass(m.Sev)][b]++
+				ss := r.SrcSer[m.Src]
+				if ss == nil && len(r.SrcSer) < ldSrcSeriesMax {
+					ss = map[int64]uint64{}
+					r.SrcSer[m.Src] = ss
+				}
+				if ss != nil {
+					ss[b]++
+				}
 			}
 			return true
 		})

@@ -484,6 +484,8 @@ td input[type=date] { width: 11rem; }
 .qtile.pick:hover { border-color: var(--c); }
 .qtile.pick[aria-pressed="true"] { outline: 2px solid var(--c); outline-offset: -1px; }
 /* every tile has the same three lines in the same fonts and sizes, so the numbers, small lines and labels line up across the row */
+.qtile .trunc { overflow: hidden; text-overflow: ellipsis; }  /* a long name is cut with an ellipsis (the full name is in the tile's tooltip), never widens the tile */
+.qtile.qtrunc { min-width: 0; }
 .qtile .qv { font-size: 1.35rem; line-height: 1.25; font-weight: 700; white-space: nowrap; }
 .qtile .qs { font-size: .75rem; line-height: 1.3; color: var(--muted); min-height: 1.3em; white-space: nowrap; }
 .qtile .ql { font-size: .8rem; line-height: 1.3; font-weight: 600; margin-top: auto; }  /* the label sits at the bottom: a one-line label shares its line with the last line of a wrapped one */

@@ -1,5 +1,26 @@
 # Changelog
 
+## [v16] - 2026-11-21 — Monitor ▸ Senders: tiles and charts, and it moves above MCP
+
+### Added
+- **Monitor ▸ Senders is laid out like Monitor ▸ Node**: a time range (Last Hour, Day, Week, Month, Custom), six tiles (senders heard, message rate and peak, messages, errors or worse, silent senders, busiest sender) and four charts drawn with the Node page's chart (hover, CSV): **Messages per minute**, **Top senders** (the five busiest), **By severity** (green debug/info/notice, amber warning, red error or worse) and **Senders heard** per interval. The table, filter and pager are below.
+- A long name in the **Busiest** tile is cut with an ellipsis (the full name and address are in its tooltip); a tile never grows wider for it.
+- `GET /api/logs/stats` with `series=1` also returns `sources`, `top_sources`, `source_series`, `severity_series` and `heard` (and the nodes' `stats` answer carries `by_source`, `source_series` and `severity_series`); the MCP and CLI stats are unchanged. At most 500 senders a node get a series of their own; the totals count them all.
+
+### Changed
+- **Senders** is the first page under Monitor, above MCP.
+- The tiles and charts read the stored messages: every 15 s for the last hour, once a minute for longer ranges, on Apply for a custom range. The table still refreshes every 5 s.
+
+### Verified
+- `node --check`; gofmt, `go vet`, `go test -race -count=1 ./...`, `CGO_ENABLED=0` tests, cross-builds for linux/amd64, arm64, arm, 386 and riscv64. New test `TestStoreStatsPerSenderAndSeverity`.
+- The page in headless Chromium, light and dark, against a mocked API (60 senders, a 44-character sender name): tiles, four charts, truncation, filter and paging, no page errors.
+
+### Not verified
+- Against a real store and a cluster: the merge of the per-sender counts across nodes is read, not run; how long a 30-day scan takes with a large store.
+- The tiles and charts do not follow the filter box (they cover all senders).
+- **Data rate** from the mockup is not there: the store does not keep bytes per message over time, only a total per sender since start. A **Silent** tile took its place.
+- **By severity** is lines, not stacked areas.
+
 ## [v15] - 2026-11-20 — Monitor ▸ Senders columns: Name, Address, Proto, Last seen, Messages, Node
 
 ### Changed

@@ -41,3 +41,25 @@ func TestLogFilterNot(t *testing.T) {
 		}
 	}
 }
+
+func TestWordWildcard(t *testing.T) {
+	cases := []struct {
+		text, name string
+		want       bool
+	}{
+		{"fw1*", "devname=\"fw1\" level=warning", true},
+		{"!fw1*", "devname=\"fw1\" level=warning", false},
+		{"!fw1*", "devname=\"sw2\"", true},
+		{"*.cox.net", "host a.cox.net up", true},
+		{"*.cox.net", "host a.cox.org up", false},
+		{"fa*ed", "login failed", true},
+		{"ed*fa", "login failed", false},
+		{"fw1*", "fw", false},
+		{"*", "anything", true},
+	}
+	for _, c := range cases {
+		if got := parseMatch(c.text).matches(c.name); got != c.want {
+			t.Errorf("%q on %q: %v, want %v", c.text, c.name, got, c.want)
+		}
+	}
+}

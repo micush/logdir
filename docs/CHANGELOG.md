@@ -1,5 +1,11 @@
 # Changelog
 
+## [v29] - 2026-11-21 — Logs: `*` works in the words you search for
+
+### Fixed
+
+- **A `*` in the Messages filter was searched for as a star**, so `!fw1*` excluded nothing (no message holds the text `fw1*`). In a word it now stands for any run of characters: `fw1*`, `!fw1*`, `*.cox.net`, `fa*ed`. The same goes for pattern alerts and the daemon's own log search.
+
 ## [v28] - 2026-11-21 — README rewritten, screenshots added
 
 ### Changed

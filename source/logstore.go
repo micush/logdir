@@ -352,14 +352,14 @@ func logMatches(e matchExpr, line string) bool {
 		all := true
 		for _, term := range group {
 			if strings.HasPrefix(term, "!") {
-				if strings.Contains(line, term[1:]) {
+				if findTerm(line, term[1:]) {
 					all = false
 					break
 				}
 				continue
 			}
 			for _, w := range strings.Fields(term) {
-				if !strings.Contains(line, w) {
+				if !findTerm(line, w) {
 					all = false
 					break
 				}

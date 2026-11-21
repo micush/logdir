@@ -92,6 +92,25 @@ func parseMatch(text string) matchExpr {
 	return expr
 }
 
+// findTerm says whether the text holds the term.  A * in the term stands for any run of characters, so fw1* finds fw1 anywhere,
+// *.cox.net finds .cox.net, and a*b finds an a with a b somewhere after it.
+func findTerm(text, term string) bool {
+	if !strings.Contains(term, "*") {
+		return strings.Contains(text, term)
+	}
+	for _, part := range strings.Split(term, "*") {
+		if part == "" {
+			continue
+		}
+		i := strings.Index(text, part)
+		if i < 0 {
+			return false
+		}
+		text = text[i+len(part):]
+	}
+	return true
+}
+
 // matches says whether the expression holds for something known by these (lower-case) texts: each term must be found in at
 // least one of them.
 func (e matchExpr) matches(texts ...string) bool {
@@ -101,7 +120,7 @@ func (e matchExpr) matches(texts ...string) bool {
 			neg := strings.HasPrefix(term, "!")
 			found := false
 			for _, t := range texts {
-				if strings.Contains(t, strings.TrimPrefix(term, "!")) {
+				if findTerm(t, strings.TrimPrefix(term, "!")) {
 					found = true
 					break
 				}

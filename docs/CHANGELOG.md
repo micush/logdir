@@ -1,5 +1,13 @@
 # Changelog
 
+## [v17] - 2026-11-21 — Monitor ▸ Senders: axis labels of the Senders heard chart
+
+### Fixed
+- The **Senders heard** chart rounded its axis labels to whole numbers, so a chart with few senders read 0, 3, 5, 8, 10 for steps of 2.5. It shows the real values now (0, 2.5, 5, 7.5, 10).
+
+### Verified
+- `node --check`; the page in headless Chromium (light theme, mocked API), no page errors.
+
 ## [v16] - 2026-11-21 — Monitor ▸ Senders: tiles and charts, and it moves above MCP
 
 ### Added

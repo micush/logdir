@@ -4668,7 +4668,7 @@
         QCHARTS.lineChart("Messages per minute", d, [{ label: "All senders", cls: "t1", values: perMin(pts.map((p) => p.count)), text: (i) => fmt(pts[i].count / per) + " per minute" }], { unit, floor: 10, axis }),
         QCHARTS.lineChart("Top senders", d, topS.map((c, k) => { const v = perMin(st.source_series[c.name]); return { label: nameOf(c.name), cls: cls[k], values: v, text: (i) => fmt(v[i]) + " per minute" }; }), { unit, floor: 10, axis, legend: true }),
         QCHARTS.lineChart("By severity", d, SEV_COLORS.map(([k, label, c]) => { const v = perMin((st.severity_series || {})[k] || pts.map(() => 0)); return { label, cls: c, values: v, text: (i) => fmt(v[i]) + " per minute" }; }), { unit, floor: 10, axis, legend: true }),
-        QCHARTS.lineChart("Senders heard", d, [{ label: "Senders", cls: "t3", values: (st.heard || []).map(Number), text: (i) => count(st.heard[i]) + (st.heard[i] === 1 ? " sender" : " senders") }], { unit: "senders", floor: 4, axis: (v) => Math.round(v) }));
+        QCHARTS.lineChart("Senders heard", d, [{ label: "Senders", cls: "t3", values: (st.heard || []).map(Number), text: (i) => count(st.heard[i]) + (st.heard[i] === 1 ? " sender" : " senders") }], { unit: "senders", floor: 4, axis: (v) => (Number.isInteger(v) ? v : v.toFixed(1)) }));
     }
     async function loadStats() {
       const my = ++statsSeq;

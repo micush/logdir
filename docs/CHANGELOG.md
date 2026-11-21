@@ -1,5 +1,27 @@
 # Changelog
 
+## [v15] - 2026-11-20 — Monitor ▸ Senders columns: Name, Address, Proto, Last seen, Messages, Node
+
+### Changed
+- The table's columns are **Name** (the reverse-DNS host part, else the Configure ▸ Senders name, else the host its messages give), **Address**, **Proto**, **Last seen**, **Messages** and **Node**. The Host column is gone; the host its messages give is in the Name tooltip and the filter still matches it. The CSV is unchanged. Help topic updated.
+
+### Verified
+- `node --check`; the page in headless Chromium (light theme, mocked API): the six columns, filter and paging as before, no page errors; gofmt, `go vet`, the help, version and field-hint tests.
+
+### Not verified
+- The dark theme; the full suite was not rerun for this change.
+
+## [v14] - 2026-11-20 — Monitor ▸ Senders: the filter and pager laid out like the Settings tables
+
+### Changed
+- The filter box, the count, **« ‹ page › »** and **per page** sit in one row under the card header, as on the Settings tables (**Filter rows**, 24 rem wide), instead of stretched across the header. The download button stays in the header.
+
+### Verified
+- `node --check`; the Senders page in headless Chromium (light theme, 60 mock senders): the row looks like the Settings tables, filter, paging and the refresh behave as in v13, no page errors; gofmt, `go vet`, the help, version and field-hint tests.
+
+### Not verified
+- The dark theme; the full suite was not rerun for this layout-only change (it was run for v13).
+
 ## [v13] - 2026-11-20 — reverse lookups that find what `host` finds; Monitor ▸ Senders filter and pager
 
 ### Fixed

@@ -4594,7 +4594,7 @@
     function build() {
       const mkBtn = (label, title, to) => h("button", { type: "button", class: "btn small", title, "aria-label": title, onclick: () => { kept.page = to(); render(); } }, label);
       btns = [mkBtn("«", "First page", () => 0), mkBtn("‹", "Previous page", () => kept.page - 1), mkBtn("›", "Next page", () => kept.page + 1), mkBtn("»", "Last page", () => 1e9)];
-      filter = h("input", { type: "text", class: "policy-filter", placeholder: "Filter senders", "aria-label": "Filter senders", autocomplete: "off", spellcheck: "false", value: kept.q,
+      filter = h("input", { type: "text", class: "policy-filter", placeholder: "Filter rows", "aria-label": "Filter senders", autocomplete: "off", spellcheck: "false", value: kept.q,
         oninput: () => { kept.q = filter.value; kept.page = 0; render(); } });
       countEl = h("span", { class: "policy-count muted" }, "");
       pageIn = h("input", { type: "number", min: "1", class: "policy-page", "aria-label": "Page number", onchange: (e) => { kept.page = (parseInt(e.target.value, 10) || 1) - 1; render(); } });
@@ -4606,7 +4606,8 @@
       csv = csvButton("Log senders", () => [["Sender", "Name", "DNS name", "Host", "Via", "First seen (UTC)", "Last seen (UTC)", "Messages", "Bytes", "Node"],
         ...visible().map((e) => [e.addr, e.name || "", e.rdns || "", e.host || "", e.via || "", csvIso(e.first_seen), csvIso(e.last_seen), e.messages, e.bytes, e.node || ""])]);
       bodyEl = h("div", { class: "body flush" });
-      card = h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Senders")), filter, countEl, h("span", { class: "grow" }), pager, sizeSel, csv), bodyEl);
+      card = h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Senders")), h("span", { class: "grow" }), csv),
+        h("div", { class: "body" }, h("div", { class: "policy-bar" }, filter, countEl, h("span", { class: "grow" }), pager, sizeSel)), bodyEl);
       return card;
     }
     function render() {
@@ -4621,9 +4622,10 @@
       csv.hidden = !vis.length;
       clear(bodyEl).append(list.length
         ? h("div", { class: "scroll" }, h("table", {},
-          h("thead", {}, h("tr", {}, ["Sender", "Host", "Via", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
+          h("thead", {}, h("tr", {}, ["Name", "Address", "Proto", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
           h("tbody", {}, list.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => only(e.addr)], "-", ...netToolMenu(e.addr)]) },
-            h("td", { title: [e.rdns ? "DNS name: " + e.rdns : "", e.name && e.name !== e.rev ? "Senders entry: " + e.name : ""].filter(Boolean).join("\n") }, (e.rev || e.name) ? (e.rev || e.name) + " " : "", h("span", { class: (e.rev || e.name) ? "muted small mono" : "mono" }, e.addr)), h("td", {}, e.host || "–"), h("td", {}, e.via || "–"),
+            h("td", { title: [e.rdns ? "DNS name: " + e.rdns : "", e.name && e.name !== e.rev ? "Senders entry: " + e.name : "", e.host ? "Its messages say: " + e.host : ""].filter(Boolean).join("\n") }, e.rev || e.name || e.host || "–"),
+            h("td", { class: "mono" }, e.addr), h("td", {}, e.via || "–"),
             h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))
         : h("div", { class: "empty" }, rows.length ? "No sender matches." : "No sender has sent anything yet."));
     }

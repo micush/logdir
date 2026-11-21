@@ -78,6 +78,7 @@ type ldFilter struct {
 	minSev   int  // -1: any
 	sevExact bool // only this severity, not this severe or worse
 	src      string
+	hostSrc  map[string]bool // senders whose name matches the host filter: their messages match it too
 	srcSet   map[string]bool // senders picked by name: nil is no such filter, an empty set matches nothing
 }
 
@@ -115,7 +116,7 @@ func (f *ldFilter) match(m *LdMsg) bool {
 	if f.srcSet != nil && !f.srcSet[m.Src] {
 		return false
 	}
-	if !f.hostOK(m.Host) || !f.progOK(m.Prog) {
+	if !(f.hostOK(m.Host) || f.hostSrc[m.Src]) || !f.progOK(m.Prog) {
 		return false
 	}
 	return len(f.expr) == 0 || f.expr.matches(strings.ToLower(m.text()))
@@ -133,7 +134,7 @@ func (f *ldFilter) hourOK(h *ldHourMeta) bool {
 		return false
 	}
 	if !h.Full && h.Hosts != nil {
-		if f.host != "" && !strings.Contains(f.host, "*") {
+		if f.host != "" && !strings.Contains(f.host, "*") && len(f.hostSrc) == 0 {
 			if _, ok := h.Hosts[f.host]; !ok {
 				return false
 			}
@@ -573,6 +574,9 @@ type LdQuery struct {
 	// turns it into the addresses it knows (srcSet) when it runs the query.
 	SrcName string `json:"src_name,omitempty"`
 	srcSet  map[string]bool
+	// hostSrc is, for a host filter, the addresses of the senders whose name matches it: the Logs page names a message by its sender, so
+	// host=fw1-mgmt finds that sender's messages even when the message calls the host something else.  Set by the node that runs the query.
+	hostSrc map[string]bool
 	Limit   int  `json:"limit"`
 	Oldest  bool `json:"oldest_first,omitempty"` // the oldest matches (default: the newest)
 }
@@ -603,7 +607,7 @@ func (q *LdQuery) Validate() error {
 }
 
 func (q *LdQuery) filter() *ldFilter {
-	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet}
+	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet, hostSrc: q.hostSrc}
 }
 
 // LdAnswer is what one node found.

@@ -61,6 +61,9 @@ func (s *ldService) local(ctx context.Context, m ldQueryMsg) (ldQueryReply, bool
 		if err := m.Query.Validate(); err != nil {
 			return r, false
 		}
+		if m.Query.Host != "" {
+			m.Query.hostSrc = s.sendersByName(m.Query.Host)
+		}
 		if m.Query.SrcName != "" {
 			m.Query.srcSet = s.sendersByName(m.Query.SrcName)
 			if m.Query.srcSet == nil {

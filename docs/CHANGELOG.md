@@ -1,5 +1,11 @@
 # Changelog
 
+## [v26] - 2026-11-21 — Logs: host= finds the sender's name
+
+### Fixed
+
+- **`host=` in the Messages filter matches the name the Host column shows.** It matched only the host name written inside the message, so `host=fw1-mgmt` found nothing for a firewall that calls itself `cush`. It now also matches every message from a sender whose name (its DNS name or its name in Configure ▸ Senders) matches, with `*` wildcards as before.
+
 ## [v25] - 2026-11-21 — Logs: the Host column uses the DNS name first
 
 ### Changed

@@ -502,3 +502,20 @@ func TestListLimit(t *testing.T) {
 		}
 	}
 }
+
+func TestHostFilterAlsoMatchesTheSendersName(t *testing.T) {
+	q := LdQuery{Host: "fw1-mgmt", MinSev: -1, hostSrc: map[string]bool{"192.168.200.10": true}}
+	f := q.filter()
+	if !f.match(&LdMsg{Host: "cush", Src: "192.168.200.10"}) {
+		t.Fatal("a message from the sender called fw1-mgmt did not match host=fw1-mgmt")
+	}
+	if !f.match(&LdMsg{Host: "fw1-mgmt", Src: "10.0.0.9"}) {
+		t.Fatal("a message that names the host itself did not match")
+	}
+	if f.match(&LdMsg{Host: "cush", Src: "10.0.0.9"}) {
+		t.Fatal("another sender's message matched")
+	}
+	if !f.hourOK(&ldHourMeta{Count: 1, Hosts: map[string]struct{}{"cush": {}}, Progs: map[string]struct{}{}}) {
+		t.Fatal("an hour that has no message naming the host was skipped, though the sender's messages match")
+	}
+}

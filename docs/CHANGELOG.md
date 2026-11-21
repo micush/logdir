@@ -1,5 +1,11 @@
 # Changelog
 
+## [v28] - 2026-11-21 — README rewritten, screenshots added
+
+### Changed
+
+- **README** rewritten in plainer words, with screenshots of the real GUI from `snaps/`. The screenshots use sample data (made-up hosts, `example.net` names). `snaps/` is new.
+
 ## [v27] - 2026-11-21 — Logs: a word finds the sender's name
 
 ### Fixed

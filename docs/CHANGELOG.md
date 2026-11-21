@@ -1,6 +1,6 @@
 # Changelog
 
-## [v29] - 2026-11-21 — Logs: `*` works in the words you search for
+## [v30] - 2026-11-21 — Logs: `*` works in the words you search for
 
 ### Fixed
 
@@ -333,7 +333,7 @@
 ### Changed
 - **Flow ▸ Exporters shows each exporter once.** An exporter heard by both nodes (its traffic follows the active gateway) had a row per node. It is one row now: the records are added up, the last-seen time is the latest, and the Node column lists the nodes, the one that heard it last first (`flowdir2, flowdir1`). The CSV export has the same rows.
 
-## [v29] - 2026-11-20 — network tools on right-click
+## [v30] - 2026-11-20 — network tools on right-click
 
 ### Added
 - **Right-click an exporter on the Topology (box or dot), a host on the Flow page, or an exporter in the Flow ▸ Exporters table: Ping, Traceroute, Scan, Lookup, Whois**, as in netdir. Ping, Traceroute and Scan run on the node picked in the Node menu and the popup shows the output as it grows (Traceroute also as a table of hops); Lookup gives the reverse name of an address, Whois the registry data. On a Conversations row each of the two addresses has its own menu. The tools were already in the daemon (`--ping`, `--traceroute`, `--scan`, `--whois`, MCP `net_*`); this is the menu that was missing.

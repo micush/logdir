@@ -4345,7 +4345,7 @@
     const LIMITS = [100, 200, 500, 1000, 5000];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
-    const kept = { range: "1h", severity: "", host: "", program: "", source: "", q: "", limit: 200, page: 0, size: 100 };
+    const kept = { range: "1h", severity: "", host: "", program: "", source: "", q: "", limit: 200, page: 0, size: 25 };
     const SEVNAMES = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
     const count = (v) => (Number(v) || 0).toLocaleString();
     const niceMax = (v) => {
@@ -4604,7 +4604,7 @@
         ? h("div", { class: "scroll" }, h("table", {},
           h("thead", {}, h("tr", {}, ["Sender", "Host", "Via", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
           h("tbody", {}, rows.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => only(e.addr)], "-", ...netToolMenu(e.addr)]) },
-            h("td", { title: e.rdns ? "DNS name: " + e.rdns : "" }, (e.name || e.rdns) ? (e.name || e.rdns) + " " : "", h("span", { class: (e.name || e.rdns) ? "muted small mono" : "mono" }, e.addr)), h("td", {}, e.host || "–"), h("td", {}, e.via || "–"),
+            h("td", { title: [e.rdns ? "DNS name: " + e.rdns : "", e.name && e.name !== e.rev ? "Senders entry: " + e.name : ""].filter(Boolean).join("\n") }, (e.rev || e.name) ? (e.rev || e.name) + " " : "", h("span", { class: (e.rev || e.name) ? "muted small mono" : "mono" }, e.addr)), h("td", {}, e.host || "–"), h("td", {}, e.via || "–"),
             h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))
         : h("div", { class: "empty" }, "No sender has sent anything yet.");
       clear(box).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Senders")), h("span", { class: "grow" }),

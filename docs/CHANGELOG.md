@@ -1,5 +1,30 @@
 # Changelog
 
+## [v12] - 2026-11-20 — a sender is named by the host part of its reverse DNS name
+
+### Changed
+- **Monitor ▸ Senders** names a sender by the host part of its reverse DNS name (`sw1` for `sw1.example.com`), as Topology already did; the Configure ▸ Senders entry name is used only when the address has no reverse name. The tooltip holds the full DNS name and the entry name. Several addresses covered by one network entry (all named `cush`) now each show their own host name once looked up.
+
+### Fixed
+- **A lookup that timed out was remembered as "no name" for 30 minutes**, so a slow DNS server left senders under their entry name. Only a name or a definite "not found" is kept 30 minutes now; a timeout or server failure is tried again after a minute, and each lookup waits up to 2 s (was 0.5 s).
+
+### Verified
+- `node --check`; gofmt, `go vet`, `go test -race -count=1 ./...`, `CGO_ENABLED=0` vet and tests, cross-builds for linux/amd64, arm64, arm, 386 and riscv64; new test `TestLdDNSFailedLookupIsRetriedSoon`.
+
+### Not verified
+- Against a real DNS server or in a browser: whether the senders in the screenshot have PTR records was not checked. A sender with no PTR record is still shown by its entry name.
+
+## [v11] - 2026-11-20 — Logs ▸ Messages pages of 25 by default
+
+### Changed
+- The **Messages** card on Logs now shows 25 messages per page instead of 100 until you pick another size (**per page** menu, 25 to 500, unchanged). The help topic says 25.
+
+### Verified
+- `node --check webui/app.js`; gofmt, `go vet`, `go test -race -count=1 ./...` and `CGO_ENABLED=0 go vet` / `go test`; cross-builds for linux/amd64, arm64, arm, 386 and riscv64.
+
+### Not verified
+- The page in a browser (a one-number change in the page state; not looked at in Chromium).
+
 ## [v10] - 2026-11-20 — closed hours cached in memory, under a memory cap
 
 ### Added

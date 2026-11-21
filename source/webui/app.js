@@ -4426,11 +4426,11 @@
         ["Copy message", () => { try { navigator.clipboard.writeText(m.message); } catch (_) { /* no clipboard */ } }]].filter((it) => !(it[0] === "Only this host" && !m.host) && !(it[0] === "Only this program" && !m.program));
       return m.source ? [...own, "-", ...netToolMenu(m.source)] : own;
     }
-    // the host column: what the sender is called (its name in Configure ▸ Senders, else the first part of its DNS name), the same name the Senders
+    // the host column: what the sender is called (the first part of its DNS name, else its name in Configure ▸ Senders), the same name the Senders
     // page and the charts use; a sender that is not in the list shows the host name its message gives, else its DNS name.  The name the message
     // gives itself (a firewall calls itself "cush", the DNS says fw1-mgmt) is in the tooltip.  The address has its own column.
     function hostCell(m) {
-      const e = senders.find((x) => x.addr === m.source), nm = (e && (e.name || e.rev)) || "";
+      const e = senders.find((x) => x.addr === m.source), nm = (e && (e.rev || e.name)) || "";
       if (nm) return h("button", { type: "button", class: "qlink", title: "Only this sender" + (m.host && m.host !== m.source && m.host.toLowerCase() !== nm.toLowerCase() ? " (the message says its host is " + m.host + ")" : ""), onclick: () => set({ source: m.source }) }, nm);
       if (m.host && m.host !== m.source) return h("button", { type: "button", class: "qlink", title: "Only this host", onclick: () => set({ host: m.host }) }, m.host);
       return m.source_name ? h("button", { type: "button", class: "qlink", title: "Only this sender", onclick: () => set({ source: m.source }) }, m.source_name) : "–";

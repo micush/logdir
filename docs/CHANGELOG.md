@@ -1,5 +1,11 @@
 # Changelog
 
+## [v25] - 2026-11-21 — Logs: the Host column uses the DNS name first
+
+### Changed
+
+- The Host column takes the sender's DNS name first (`fw1-mgmt`), then its name in Configure ▸ Senders, which is the order the Senders page and the charts use. In v24 the Senders name came first, so a sender configured as `cush` still showed `cush`.
+
 ## [v24] - 2026-11-21 — Logs: opens on the last 15 minutes
 
 ### Changed

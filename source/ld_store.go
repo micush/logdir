@@ -15,6 +15,8 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 )
 
 // The log store of a node: what this node received, as one file per hour (UTC) of JSON lines, `2026112005.jsonl`.  The open hour is
@@ -79,6 +81,7 @@ type ldFilter struct {
 	sevExact bool // only this severity, not this severe or worse
 	src      string
 	srcWords map[string]string // each sender's names: a word of the search matches them too
+	buf      []byte            // scratch for the lower-cased text of the message being matched (a filter is used by one goroutine)
 	hostSrc  map[string]bool   // senders whose name matches the host filter: their messages match it too
 	srcSet   map[string]bool   // senders picked by name: nil is no such filter, an empty set matches nothing
 }
@@ -107,6 +110,23 @@ func ldGlob(p, s string) bool {
 	return len(parts) == 1 || strings.HasSuffix(s, last)
 }
 
+// appendLower appends s in lower case: the same bytes strings.ToLower gives, without making a string when s is plain ASCII.
+func appendLower(dst []byte, s string) []byte {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return append(dst, strings.ToLower(s)...)
+		}
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if 'A' <= c && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		dst = append(dst, c)
+	}
+	return dst
+}
+
 func (f *ldFilter) match(m *LdMsg) bool {
 	if f.minSev >= 0 && (int(m.Sev) > f.minSev || (f.sevExact && int(m.Sev) != f.minSev)) {
 		return false
@@ -123,11 +143,18 @@ func (f *ldFilter) match(m *LdMsg) bool {
 	if len(f.expr) == 0 {
 		return true
 	}
-	txt := strings.ToLower(m.text())
+	// the lower-cased text is built in a buffer the filter keeps, not in two new strings for every message scanned
+	buf := appendLower(f.buf[:0], m.Host)
+	buf = append(buf, ' ')
+	buf = appendLower(buf, m.Prog)
+	buf = append(buf, ' ')
+	buf = appendLower(buf, m.Msg)
 	if w := f.srcWords[m.Src]; w != "" {
-		txt += " " + w
+		buf = append(append(buf, ' '), w...)
 	}
-	return f.expr.matches(txt)
+	f.buf = buf
+	// the string only lives for this call: matches looks in it and keeps nothing
+	return f.expr.matches(unsafe.String(unsafe.SliceData(buf), len(buf)))
 }
 
 // hourOK says whether an hour could hold a message the filter wants (false: skip the hour).
@@ -294,7 +321,26 @@ func (s *ldStore) saveMeta(h int64, m *ldHourMeta) {
 // readHour parses a whole hour (nil when it has no file).
 func (s *ldStore) readHour(h int64) []LdMsg {
 	var msgs []LdMsg
-	if !s.streamFile(h, func(m *LdMsg) bool { msgs = append(msgs, *m); return true }) {
+	in := map[string]string{} // the words that repeat in every message (host, program, address, node...) are kept once per hour
+	same := func(p *string) {
+		if len(*p) == 0 || len(*p) > 64 {
+			return
+		}
+		if v, ok := in[*p]; ok {
+			*p = v
+		} else if len(in) < 4096 {
+			in[*p] = *p
+		}
+	}
+	if !s.streamFile(h, func(m *LdMsg) bool {
+		same(&m.Host)
+		same(&m.Prog)
+		same(&m.Src)
+		same(&m.Via)
+		same(&m.Node)
+		msgs = append(msgs, *m)
+		return true
+	}) {
 		return nil
 	}
 	return msgs

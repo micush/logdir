@@ -1,5 +1,20 @@
 # Changelog
 
+## [v32] - 2026-11-21 — Memory cap defaults to 70%
+
+### Changed
+
+- **The default Memory cap is 70% of the machine's (or container's) memory, down from 90%.** At 90% a full cache or set of rollups left too little room for searches, reports, the Go runtime and the OS, and a container with no swap would kill the process. The message cache now stops growing at 70%; Go's own memory limit follows at 75%. Older data is read from disk, only slower. The Memory cap field in Configure ▸ Settings ▸ General shows 70.
+- **A cap you saved as an explicit number other than 90 is kept.** A cap that was left at the old default of 90 (never saved, or saved as 90 and so stored as no value) now means 70. To keep 90, set it to 90 again after the update: the field then stores the value.
+
+## [v31] - 2026-11-21 — Faster searches, and a memory limit for the runtime
+
+### Changed
+
+- **A search with words scans about 15% faster and allocates about 40% less.** Matching used to build two new strings for every message it looked at (the text joined together, then lower-cased). It now lower-cases into a buffer the search keeps. The matches are the same; non-ASCII text goes through the same lower-casing as before. Full scan of 180,000 messages: 213 → 183 ms, 82 → 38 MB allocated.
+- **A cached hour holds about 10% less memory.** The host, program, address, via and node of each message are kept once per hour instead of once per message (411 instead of 459 bytes a message on test data). The cache's size estimate still counts every copy, so it stays on the cautious side.
+- **Go's memory limit is set 5 points above the message cache's cap** (95% of the machine's or container's memory with the default 90%, at most 97%), so a large search can't push the process past what the machine allows and get it killed. `GOMEMLIMIT` in the environment overrides it. The cache's own cap is unchanged.
+
 ## [v30] - 2026-11-21 — Logs: `*` works in the words you search for
 
 ### Fixed

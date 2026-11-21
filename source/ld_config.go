@@ -33,7 +33,7 @@ type LogsConfig struct {
 	// DirMaxPercent: the log folder may use this percentage (0 = the default, 90) of the volume it is on.  At the cap the oldest
 	// segments go first.  Each node applies it to its own volume.
 	DirMaxPercent int `json:"dir_max_percent,omitempty"`
-	// MemMaxPercent: the closed hours kept in memory for fast searches may use this percentage (0 = the default, 90) of the machine's
+	// MemMaxPercent: the closed hours kept in memory for fast searches may use this percentage (0 = the default, 70) of the machine's
 	// memory (the container's limit when smaller).  At the cap the oldest hours go first and are read from their files again.
 	MemMaxPercent int `json:"mem_max_percent,omitempty"`
 	// RetentionDays: segments older than this are deleted (0 = keep until the disk cap removes them).

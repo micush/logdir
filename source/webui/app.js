@@ -1965,7 +1965,7 @@
     { k: "log_dir", l: "Storage folder", t: "text", hint: "This node only. Applied at restart." },
     { shared: true, k: "retention_days", l: "Keep", unit: "days", t: "int", min: 0, max: 36500, def: 0, hint: "0: until the disk cap removes the oldest." },
     { shared: true, k: "dir_max_percent", l: "Disk cap", unit: "%", t: "int", min: 1, max: 100, def: 90 },
-    { shared: true, k: "mem_max_percent", l: "Memory cap", unit: "%", t: "int", min: 1, max: 100, def: 90, hint: "Closed hours kept in memory for searches." },
+    { shared: true, k: "mem_max_percent", l: "Memory cap", unit: "%", t: "int", min: 1, max: 100, def: 70, hint: "Closed hours kept in memory for searches." },
     { shared: true, k: "list_limit", l: "Messages listed", t: "int", min: 100, max: 5000, def: 1000, hint: "On the Logs page: the newest this many." },
     { shared: true, k: "follow", l: "Follow new messages", t: "bool", hint: "Logs page: new ones show every 2 seconds." },
     { shared: true, k: "udp_port", l: "UDP port", t: "int", min: -1, max: 65535, def: 514, hint: "-1 turns it off." },
@@ -3063,7 +3063,7 @@
       const topo = fieldset(TOPO_FIELDS, { topology_squares_above: set.topology_squares_above });
       const topoShared = () => { const n = topo.get().topology_squares_above; return n > 0 && n !== 36 ? { topology_squares_above: n } : {}; };
       const lg = set.logs || {};
-      const logSet = fieldset(COLLECT_FIELDS, { log_dir: cfg.log_dir || "", retention_days: lg.retention_days || 0, dir_max_percent: lg.dir_max_percent || 90, mem_max_percent: lg.mem_max_percent || 90, list_limit: lg.list_limit || 1000, follow: !!lg.follow,
+      const logSet = fieldset(COLLECT_FIELDS, { log_dir: cfg.log_dir || "", retention_days: lg.retention_days || 0, dir_max_percent: lg.dir_max_percent || 90, mem_max_percent: lg.mem_max_percent || 70, list_limit: lg.list_limit || 1000, follow: !!lg.follow,
         udp_port: lg.udp_port || 514, tcp_port: lg.tcp_port || 514, tls_port: lg.tls_port || 6514 });
       // settings.logs has other fields (enabled, max_line) that this page has no boxes for: they are carried through as they were; the senders, the
       // alerts and the boxes above are written (a port or a cap at its default is not)
@@ -3084,7 +3084,7 @@
         const num = (x, def) => { x = Math.trunc(Number(x)); return Number.isFinite(x) && x !== def ? x : 0; };
         const { senders: _s, alerts: _a, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
         const pct = Number(v.dir_max_percent) > 0 && Number(v.dir_max_percent) !== 90 ? Math.min(100, Math.floor(Number(v.dir_max_percent))) : 0;
-        const mpct = Number(v.mem_max_percent) > 0 && Number(v.mem_max_percent) !== 90 ? Math.min(100, Math.floor(Number(v.mem_max_percent))) : 0;
+        const mpct = Number(v.mem_max_percent) > 0 && Number(v.mem_max_percent) !== 70 ? Math.min(100, Math.floor(Number(v.mem_max_percent))) : 0;
         const out = { ...rest, ...(snd.length ? { senders: snd } : {}), ...(al.length ? { alerts: al } : {}), ...(num(v.retention_days, 0) > 0 ? { retention_days: num(v.retention_days, 0) } : {}),
           ...(num(v.list_limit, 1000) ? { list_limit: Math.min(5000, Math.max(100, num(v.list_limit, 1000))) } : {}), ...(v.follow ? { follow: true } : {}), ...(pct ? { dir_max_percent: pct } : {}), ...(mpct ? { mem_max_percent: mpct } : {}), ...(num(v.udp_port, 514) ? { udp_port: num(v.udp_port, 514) } : {}), ...(num(v.tcp_port, 514) ? { tcp_port: num(v.tcp_port, 514) } : {}),
           ...(num(v.tls_port, 6514) ? { tls_port: num(v.tls_port, 6514) } : {}) };

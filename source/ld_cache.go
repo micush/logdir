@@ -12,7 +12,7 @@ import (
 // smaller), 90 unless set, and the oldest hours go first.  The hour being written is never cached, and an hour that does not fit is read
 // from its file as before, so the cap costs speed only.
 const (
-	ldDefaultMemPct = 90
+	ldDefaultMemPct = 70
 	ldWarmHours     = 24 // the hours read into the cache when the daemon starts
 	ldMsgBase       = uint64(unsafe.Sizeof(LdMsg{}))
 )

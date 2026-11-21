@@ -143,6 +143,7 @@ func (s *ldService) applyConfig() {
 	s.store.capPct, s.store.retDays = c.DirMaxPercent, c.RetentionDays
 	s.store.mu.Unlock()
 	s.store.cache.set(c.MemMaxPercent, 0)
+	applyGoMemLimit(machineMemory(), c.MemMaxPercent)
 }
 
 // Start opens the store and runs the loops.

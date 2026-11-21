@@ -1,5 +1,13 @@
 # Changelog
 
+## [v20] - 2026-11-21 — Logs: the tiles' colours say what they are
+
+### Changed
+- The four tiles on the Logs page are **green** for Messages, **red** for Errors, **amber** for Warnings and **blue** for Senders. Before, Messages was blue, Errors orange, Warnings green and Senders amber, so the colours pointed the wrong way (a green Warnings tile, an amber Senders tile).
+
+### Verified
+- `gofmt`, `go build`, `go vet`, `go test -race -count=1`; `node --check`; the Logs page in headless Chromium.
+
 ## [v19] - 2026-11-21 — Logs: click a tile to filter by it
 
 ### Added

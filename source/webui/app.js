@@ -4457,14 +4457,15 @@
       const err = ["emerg", "alert", "crit", "err"].reduce((a, k) => a + (sev[k] || 0), 0);
       const from = s ? s.from / 1000 : 0;
       const live = new Set(senders.filter((e) => e.last_seen >= from).map((e) => e.addr));
+      // the colours say what the tile is: green messages, red errors, amber warnings, blue senders
       // a tile is a button: Messages, Errors and Warnings filter the list to that severity (Messages: any), Senders opens Monitor ▸ Senders
       const tile = (cls, label, value, sub, title, onpick, pressed) => h("button", { type: "button", class: "qtile pick " + cls, title, "aria-label": title, "aria-pressed": pressed == null ? null : String(pressed), onclick: onpick },
         h("div", { class: "qv" }, value), h("div", { class: "qs" }, sub || " "), h("div", { class: "ql" }, label));
       clear(tiles).append(
-        tile("t1", "Messages", s ? count(s.total) : "–", s ? "in this range" : "", "Show messages of any severity", () => set({ severity: "" })),
-        tile("t2", "Errors", s ? count(err) : "–", "error or worse", "Show only errors or worse", () => set({ severity: "err" }), kept.severity === "err"),
-        tile("t3", "Warnings", s ? count(sev.warning || 0) : "–", "warning", "Show only warnings", () => set({ severity: "warning=" }), kept.severity === "warning="),
-        tile("t4", "Senders", String(live.size), "sent in this range", "Open Monitor ▸ Senders", () => selectTab("senders")));
+        tile("t6", "Messages", s ? count(s.total) : "–", s ? "in this range" : "", "Show messages of any severity", () => set({ severity: "" })),
+        tile("t8", "Errors", s ? count(err) : "–", "error or worse", "Show only errors or worse", () => set({ severity: "err" }), kept.severity === "err"),
+        tile("t4", "Warnings", s ? count(sev.warning || 0) : "–", "warning", "Show only warnings", () => set({ severity: "warning=" }), kept.severity === "warning="),
+        tile("t1", "Senders", String(live.size), "sent in this range", "Open Monitor ▸ Senders", () => selectTab("senders")));
     }
     // ── the chart: messages per interval ──
     function chart() {

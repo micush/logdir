@@ -117,6 +117,11 @@ type GroupConfig struct {
 	// against the interface) that every running node holds on lo and answers on
 	// while it is healthy (health.go).  Shared across the cluster.
 	ExtraVIPs []string `json:"extra_vips,omitempty"`
+	// FQDN is the DNS name people use for the gateway's shared address, AnycastFQDN the one for its anycast addresses; either may be
+	// empty.  Shared.  DNS registration (dnsreg.go) keeps each pointing at its addresses.  Omitted when empty so a configuration that
+	// never used them stays readable by older versions.
+	FQDN        string `json:"fqdn,omitempty"`
+	AnycastFQDN string `json:"anycast_fqdn,omitempty"`
 	// PausedVIPs are anycast addresses whose announcing is paused on every node (shared); PausedVIPsHere the ones
 	// paused on this node only (never replicated).  A paused address stays in ExtraVIPs but is taken off lo, so the
 	// route is withdrawn until it is resumed.
@@ -322,6 +327,11 @@ func (g *GroupConfig) Validate() error {
 	}
 	if err := validGatewayName(g.Name); err != nil {
 		return fmt.Errorf("%s: %v", pre, err)
+	}
+	for _, n := range []struct{ k, v string }{{"fqdn", g.FQDN}, {"anycast_fqdn", g.AnycastFQDN}} {
+		if n.v != "" && (strings.Contains(n.v, ":") || strings.Contains(n.v, "/") || !validHostname(n.v)) {
+			return fmt.Errorf("%s: %s %q is not a host name (give the name alone, e.g. files.example.com)", pre, n.k, n.v)
+		}
 	}
 	if g.VIP4 == "" && g.VIP6 == "" {
 		return fmt.Errorf("%s: at least one of vip4 or vip6 must be set", pre)

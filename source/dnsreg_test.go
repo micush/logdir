@@ -149,14 +149,14 @@ func (f *fakeDNS) handle(msg []byte) []byte {
 	n := 0
 	switch qtype {
 	case dnsTypeSOA:
-		if name == f.zone {
+		if name == f.zone || strings.HasSuffix(name, "."+f.zone) { // a name below the apex: the SOA still names the zone
 			m, _ := dnsWireName("ns." + f.zone)
 			rn, _ := dnsWireName("admin." + f.zone)
 			rd := append(append([]byte{}, m...), rn...)
 			for i := 0; i < 5; i++ {
 				rd = binary.BigEndian.AppendUint32(rd, 3600)
 			}
-			an, n = fakeRR(name, dnsTypeSOA, rd), 1
+			an, n = fakeRR(f.zone, dnsTypeSOA, rd), 1
 		}
 	default:
 		for _, v := range f.recs[name+"/"+strconv.Itoa(int(qtype))] {
@@ -514,5 +514,58 @@ func TestDNSRegVIPsAreTheGatewaysAddresses(t *testing.T) {
 		if !v[ap(a)] {
 			t.Errorf("%s is not excluded", a)
 		}
+	}
+}
+
+func TestDNSRegisterGatewayNames(t *testing.T) {
+	key := &tsigKey{Name: "reg-key", Secret: []byte("0123456789abcdef0123456789abcdef"), Alg: "hmac-sha256"}
+	f := newFakeDNS(t, "example.test", key)
+	r := testRegistrar(t, f, testAddrs)
+	spec := key.Name + ":" + base64.StdEncoding.EncodeToString(key.Secret)
+	cfg := DNSRegConfig{Enabled: true, Key: spec, Skip: []string{"docker*"}}
+	dc := newDaemonConfig()
+	dc.Groups = []GroupConfig{{GroupID: 1, VIP4: "10.1.2.99/24", VIP6: "2001:db8:0:1::99/64", MoreVIP4: []string{"10.1.2.98"},
+		FQDN: "Files.example.test.", AnycastFQDN: "any.example.test", ExtraVIPs: []string{"203.0.113.53", "203.0.113.54", "2001:db8:53::1"}, PausedVIPs: []string{"203.0.113.54"}}}
+	dc.DNSReg = &cfg
+	names := dnsRegNames(dc)
+	if len(names) != 4 {
+		t.Fatalf("names: %+v", names)
+	}
+	r.names = names
+	vips := dnsRegVIPs(dc)
+	st := r.run(cfg, vips, false)
+	if st.Failed != 0 {
+		t.Fatalf("run: %+v", st)
+	}
+	if got := strings.Join(f.get("files.example.test", dnsTypeA), ","); got != "10.1.2.98,10.1.2.99" {
+		t.Fatalf("gateway A = %s", got)
+	}
+	if got := f.get("files.example.test", dnsTypeAAAA); len(got) != 1 || got[0] != "2001:db8:0:1::99" {
+		t.Fatalf("gateway AAAA = %v", got)
+	}
+	if got := f.get("any.example.test", dnsTypeA); len(got) != 1 || got[0] != "203.0.113.53" { // 54 is paused everywhere
+		t.Fatalf("anycast A = %v", got)
+	}
+	if got := f.get("any.example.test", dnsTypeAAAA); len(got) != 1 {
+		t.Fatalf("anycast AAAA = %v", got)
+	}
+	// every address of a name points back at it: the shared ones at the VIP FQDN, the anycast ones at the Anycast FQDN
+	for addr, want := range map[string]string{"10.1.2.99": "files.example.test", "10.1.2.98": "files.example.test", "2001:db8:0:1::99": "files.example.test", "203.0.113.53": "any.example.test", "2001:db8:53::1": "any.example.test"} {
+		own, _ := dnsRegReverse(netip.MustParseAddr(addr))
+		if got := f.get(own, dnsTypePTR); len(got) != 1 || got[0] != want {
+			t.Fatalf("PTR of %s = %v, want %s", addr, got, want)
+		}
+	}
+	if own, _ := dnsRegReverse(netip.MustParseAddr("203.0.113.54")); len(f.get(own, dnsTypePTR)) != 0 {
+		t.Fatal("a paused anycast address got a PTR")
+	}
+	n := f.updates
+	if st = r.run(cfg, vips, false); st.Failed != 0 || f.updates != n {
+		t.Fatalf("second run sent updates: %+v", st)
+	}
+	// remove is this node's; the cluster's names stay
+	r.run(cfg, vips, true)
+	if len(f.get("files.example.test", dnsTypeA)) != 2 {
+		t.Fatal("remove took a gateway name out")
 	}
 }

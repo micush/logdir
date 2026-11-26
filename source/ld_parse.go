@@ -24,6 +24,7 @@ type LdMsg struct {
 	MID  string `json:"d,omitempty"`  // RFC 5424 MSGID
 	SD   string `json:"sd,omitempty"` // RFC 5424 structured data, as sent
 	Sent int64  `json:"o,omitempty"`  // the sender's own timestamp when it could be read (milliseconds)
+	Raw  string `json:"r,omitempty"`  // the bytes the sender sent, kept only while a shipping destination sends them (ld_ship.go)
 }
 
 var sevNames = [8]string{"emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"}

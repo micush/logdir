@@ -176,7 +176,7 @@ func requireGateTools(t *testing.T, post func(string, ...string) (int, map[strin
 	t.Helper()
 	_, m := post(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, hdr...)
 	have := toolNames(t, m)
-	for _, want := range []string{"list_nodes", "get_topology", "logs_search", "logs_stats", "logs_senders", "logs_status"} {
+	for _, want := range []string{"list_nodes", "get_topology", "logs_search", "logs_stats", "logs_senders", "logs_status", "logs_shipping"} {
 		if !containsStr(have, want) {
 			t.Errorf("%s is not offered: %v", want, have)
 		}

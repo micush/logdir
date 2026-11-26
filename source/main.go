@@ -113,6 +113,9 @@ the web GUI):
                    --logs-search "words" [--logs-args "range=1h&host=sw*&program=sshd&severity=err&source=10.0.0.5&limit=200"]
                                  (a search over every node, merged by time; words: and, or, not or !word)
                    --logs-cat FILE...   (a stored hour, YYYYMMDDHH.jsonl or .jsonl.lz, as plain JSON lines on stdout: logdir --logs-cat 2026112005.jsonl.lz | grep sshd)
+  Log shipping     --logs-ship   (every destination on every node: state, sent, how far behind, last error)
+                   --logs-ship-test NAME [--node N]   (send a test message to a destination)
+                   --logs-ship-reset NAME --logs-ship-from now|oldest|6h [--node N]   (send again from a time, or skip to now)
   LLDP             --lldp   (neighbor discovery: the setting, lldpd on this node, and the switch port of each interface)
                    --lldp-enable | --lldp-disable   (every node of the cluster runs lldpd, or none does; off by default)
   Cluster          --cluster-status  --cluster-token  --cluster-join CODE

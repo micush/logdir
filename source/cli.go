@@ -36,6 +36,8 @@ type cliFlags struct {
 	logs                                                                                                                                                                                           *bool
 	fs                                                                                                                                                                                             *flag.FlagSet
 	logsSearch, logsArgs, logsCat                                                                                                                                                                  *string
+	logsShip                                                                                                                                                                                       *bool
+	logsShipTest, logsShipReset, logsShipFrom                                                                                                                                                      *string
 	dnsOn, dnsOff, dnsNow, dnsRemove, dnsShow                                                                                                                                                      *bool
 	dnsKey, dnsDomain, dnsServer, dnsInterval, dnsTTL, dnsSkip                                                                                                                                     *string
 	syslogServer, syslogProto, syslogFacility, syslogFormat, syslogCA                                                                                                                              *string
@@ -77,6 +79,7 @@ func registerCLIFlags(fs *flag.FlagSet) *cliFlags {
 		syslog: b("syslog"), syslogOff: b("syslog-disable"), syslogOn: b("syslog-enable"), syslogTest: b("syslog-test"), syslogInsecure: b("syslog-tls-insecure"),
 		lldp: b("lldp"), lldpOn: b("lldp-enable"), lldpOff: b("lldp-disable"),
 		logs: b("logs"), logsSearch: s("logs-search"), logsArgs: s("logs-args"), logsCat: s("logs-cat"), fs: fs,
+		logsShip: b("logs-ship"), logsShipTest: s("logs-ship-test"), logsShipReset: s("logs-ship-reset"), logsShipFrom: s("logs-ship-from"),
 		dnsShow: b("dnsreg"), dnsOn: b("dnsreg-enable"), dnsOff: b("dnsreg-disable"), dnsNow: b("dnsreg-now"), dnsRemove: b("dnsreg-remove"),
 		dnsKey: s("dnsreg-key"), dnsDomain: s("dnsreg-domain"), dnsServer: s("dnsreg-server"), dnsInterval: s("dnsreg-interval"), dnsTTL: s("dnsreg-ttl"), dnsSkip: s("dnsreg-skip"),
 		syslogServer: s("syslog-server"), syslogProto: s("syslog-protocol"), syslogFacility: s("syslog-facility"), syslogFormat: s("syslog-format"), syslogCA: s("syslog-ca"),
@@ -380,6 +383,8 @@ func (f *cliFlags) run(sock string) bool {
 	case *f.dnsShow || *f.dnsOn || *f.dnsOff || *f.dnsNow || *f.dnsRemove || *f.dnsKey != "" || *f.dnsDomain != "" || *f.dnsServer != "" || *f.dnsInterval != "" || *f.dnsTTL != "" || *f.dnsSkip != "":
 		runDNSReg(sock, f)
 	// ── log collector ──
+	case *f.logsShip || *f.logsShipTest != "" || *f.logsShipReset != "":
+		runLogsShip(sock, f)
 	case *f.logs || *f.logsSearch != "":
 		runLogs(sock, f)
 	// ── lldp ──

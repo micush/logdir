@@ -253,6 +253,14 @@ func (m *Mgmt) Op(cmd string, raw json.RawMessage, actor string) (any, error) {
 		return m.LdOpSearch(a)
 	case "logs.status":
 		return m.LdOpStatus()
+	case "logs.ship":
+		return m.LdOpShip()
+	case "logs.shiptest", "logs.shipreset":
+		var a ldShipOp
+		if err := json.Unmarshal(raw, &a); err != nil {
+			return nil, fmt.Errorf("bad arguments: %w", err)
+		}
+		return m.LdOpShipDo(strings.TrimPrefix(cmd, "logs."), a, actor)
 	// syslog forwarding
 	case "syslog.status":
 		return m.SyslogStatus()

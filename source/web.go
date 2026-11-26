@@ -356,6 +356,9 @@ func (w *WebServer) Handler() http.Handler {
 	mux.HandleFunc("GET /api/logs/stats", w.authed(w.handleLogStats))
 	mux.HandleFunc("GET /api/logs/senders", w.authed(w.handleLogSenders))
 	mux.HandleFunc("GET /api/logs/status", w.authed(w.handleLogStatus))
+	mux.HandleFunc("GET /api/logs/shipping", w.authed(w.handleLogShipping))
+	mux.HandleFunc("POST /api/logs/shipping/test", w.authed(w.handleLogShipOp("shiptest")))
+	mux.HandleFunc("POST /api/logs/shipping/reset", w.authed(w.handleLogShipOp("shipreset")))
 	mux.HandleFunc("GET /api/canvas", w.authed(func(rw http.ResponseWriter, r *http.Request, s *session) {
 		t0 := time.Now()
 		groups := w.status.canvasGroups()

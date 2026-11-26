@@ -59,6 +59,8 @@ func expectedHelpTopics(sidebar []string) []string {
 			want = append(want, "config_privacy")
 		case "cfg_senders":
 			want = append(want, "config_senders")
+		case "cfg_shipping":
+			want = append(want, "config_shipping")
 		case "cfg_web":
 			want = append(want, "config_web")
 		default:

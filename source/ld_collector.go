@@ -79,6 +79,9 @@ type ldService struct {
 	store   *ldStore
 	dns     *ldDNS
 	dnsBusy atomic.Bool // a background reverse lookup of senders is running
+	keepRaw atomic.Bool // a shipping destination sends the bytes senders sent: they are kept with each message
+	ship    ldShipper
+	testCfg atomic.Pointer[LogsConfig]
 
 	mu        sync.Mutex
 	udp       map[ldListenKey]net.PacketConn
@@ -120,6 +123,9 @@ func newLdService(sup *Supervisor, mg *Mgmt) *ldService {
 
 func (s *ldService) config() LogsConfig {
 	if s.sup == nil {
+		if c := s.testCfg.Load(); c != nil { // a test sets the settings directly
+			return *c
+		}
 		return LogsConfig{}
 	}
 	dc := s.sup.config()
@@ -159,6 +165,7 @@ func (s *ldService) Start() {
 	go s.loop(ctx, time.Second, s.store.Flush)
 	go s.loop(ctx, time.Minute, func() { s.applyConfig(); s.store.Maintain() })
 	go s.loop(ctx, time.Minute, s.resolveSenders)
+	go s.loop(ctx, 3*time.Second, func() { s.reconcileShipping(ctx) })
 }
 
 func (s *ldService) loop(ctx context.Context, every time.Duration, f func()) {
@@ -194,6 +201,7 @@ func (s *ldService) Stop() {
 		c.Close()
 	}
 	s.mu.Unlock()
+	s.stopShipping() // the cursors are written
 	s.store.Flush()
 	s.store.Maintain()
 	s.store.Close()
@@ -502,6 +510,9 @@ func (s *ldService) handle(src, dst netip.Addr, via string, b []byte, now time.T
 	}
 	cfg := s.config()
 	m := parseSyslog(b, src, via, now, cfg.maxLine())
+	if s.keepRaw.Load() {
+		m.Raw = ldRawText(b, cfg.maxLine())
+	}
 	s.store.Add(m)
 	ldStats.parsed.Add(1)
 	s.noteSender(src, dst, via, &m, len(b), now)

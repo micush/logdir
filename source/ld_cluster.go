@@ -19,9 +19,10 @@ import (
 // sent to two nodes is on both; the merge keeps one of the copies.
 
 type ldQueryMsg struct {
-	Op    string  `json:"op"` // search, tail, stats, senders or status
-	Query LdQuery `json:"query"`
-	Step  int64   `json:"step,omitempty"`
+	Op    string    `json:"op"` // search, tail, stats, senders, status, shipstatus, shiptest or shipreset
+	Query LdQuery   `json:"query"`
+	Step  int64     `json:"step,omitempty"`
+	Ship  *ldShipOp `json:"ship,omitempty"`
 }
 
 type ldQueryReply struct {
@@ -29,6 +30,8 @@ type ldQueryReply struct {
 	Stats   *LdStatsAnswer `json:"stats,omitempty"`
 	Senders []LdSenderInfo `json:"senders,omitempty"`
 	Status  *LdNodeStatus  `json:"status,omitempty"`
+	Ship    []LdShipStatus `json:"ship,omitempty"`
+	ShipRes *LdShipResult  `json:"ship_result,omitempty"`
 }
 
 func (c *Cluster) registerLogRoutes(mux *http.ServeMux) {
@@ -89,6 +92,17 @@ func (s *ldService) local(ctx context.Context, m ldQueryMsg) (ldQueryReply, bool
 	case "status":
 		st := s.Status()
 		r.Status = &st
+	case "shipstatus":
+		r.Ship = s.ShipStatus()
+	case "shiptest", "shipreset":
+		if m.Ship == nil || m.Ship.Dest != nil { // a destination not saved is tried from the node that was asked only
+			return r, false
+		}
+		if m.Op == "shiptest" {
+			r.ShipRes = s.ShipTest(*m.Ship)
+		} else {
+			r.ShipRes = s.ShipReset(*m.Ship)
+		}
 	default:
 		return r, false
 	}

@@ -352,9 +352,9 @@
   const TOPO = "Topology";
   const LOGS = "Logs";   // its own entry above Topology: no list under it
   const NAV_GROUPS = [
-    ["Configure", [["cfg_general", "Settings"], ["cfg_groups", "Gateways"], ["cfg_mcp", "MCP"], ["cfg_privacy", "Privacy"], ["cfg_senders", "Senders"], ["cfg_web", "Web GUI"], ["cfg_monitoring", "Monitoring"], ["cfg_alerts", "Alerts"], ["cfg_backup", "Backup"], ["anycast", "Anycast"], ["users", "Users"]]],
+    ["Configure", [["cfg_general", "Settings"], ["cfg_groups", "Gateways"], ["cfg_mcp", "MCP"], ["cfg_privacy", "Privacy"], ["cfg_senders", "Senders"], ["cfg_shipping", "Shipping"], ["cfg_web", "Web GUI"], ["cfg_monitoring", "Monitoring"], ["cfg_alerts", "Alerts"], ["cfg_backup", "Backup"], ["anycast", "Anycast"], ["users", "Users"]]],
     ["Operate", [["node", "Node"], ["cluster", "Cluster"], ["anycastop", "Anycast"], ["scheduler", "Scheduler"], ["history", "History"], ["updates", "Upgrade"]]],
-    ["Monitor", [["senders", "Senders"], ["mcpusage", "MCP"], ["host", "Node"], ["gateways", "Gateways"], ["nodes", "Cluster"], ["anycaststatus", "Anycast"], ["alerts", "Alerts"], ["capture", "Capture"], ["log", "Log"]]],
+    ["Monitor", [["senders", "Senders"], ["shipping", "Shipping"], ["mcpusage", "MCP"], ["host", "Node"], ["gateways", "Gateways"], ["nodes", "Cluster"], ["anycaststatus", "Anycast"], ["alerts", "Alerts"], ["capture", "Capture"], ["log", "Log"]]],
   ];
   const TABS = [["logs", LOGS], ["topology", TOPO]].concat(NAV_GROUPS.flatMap(([, items]) => items));
   const groupOf = (id) => (id === "logs" ? LOGS : id === "topology" ? TOPO : (NAV_GROUPS.find(([, items]) => items.some(([i]) => i === id)) || [null])[0]);
@@ -595,6 +595,7 @@
       case "cfg_general": return state.settingsTab === "cluster" ? "config_cluster" : state.settingsTab === "upgrades" ? "config_upgrades" : state.settingsTab === "dns" ? "config_dns" : state.settingsTab === "general" ? "config_general" : "config_logs";
       case "cfg_groups": return "config_groups";
       case "cfg_senders": return "config_senders";
+      case "cfg_shipping": return "config_shipping";
       case "cfg_web": return "config_web";
       case "anycast": return "anycast_" + (state.anycastTab === 1 ? "ospf" : "bgp");
       case "anycaststatus": return "anycaststatus_" + (state.anycastMonTab === 1 ? "ospf" : "bgp");
@@ -3044,6 +3045,160 @@
     };
   };
 
+  // ── Configure ▸ Shipping (settings.logs.destinations, ld_ship.go): where every node sends on what it received ─────────────
+  const SHIP_TYPES = [["syslog", "Syslog (RFC 5424)"], ["json_tcp", "JSON over TCP"], ["splunk_hec", "Splunk HEC"], ["elastic", "Elasticsearch"], ["loki", "Loki"]];
+  const SHIP_SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["warning=", "Warning only"], ["notice", "Notice or worse"], ["info", "Info or worse"]];
+  const SHIP_SEVN = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
+  const SHIP_STARTS = [["now", "Now"], ["1h", "1 hour back"], ["24h", "24 hours back"], ["7d", "7 days back"], ["oldest", "The oldest kept"]];
+  const shipHttp = (t) => t === "splunk_hec" || t === "elastic" || t === "loki";
+  // the filter as the Logs page writes it: words plus host=, program= and source= (several source= are several senders)
+  const shipFilterText = (d) => [d.host && "host=" + d.host, d.program && "program=" + d.program, ...(d.senders || []).map((s) => "source=" + s), d.query].filter(Boolean).join(" ");
+  function shipFilterParse(txt) {
+    const o = { host: "", program: "", senders: [], query: [] };
+    for (const w of String(txt || "").trim().split(/\s+/).filter(Boolean)) {
+      const m = /^(host|program|prog|source|src)=(.+)$/i.exec(w);
+      if (!m) o.query.push(w);
+      else if (/^host$/i.test(m[1])) o.host = m[2];
+      else if (/^(program|prog)$/i.test(m[1])) o.program = m[2];
+      else o.senders.push(m[2]);
+    }
+    return { ...(o.host ? { host: o.host } : {}), ...(o.program ? { program: o.program } : {}), ...(o.senders.length ? { senders: o.senders } : {}), ...(o.query.length ? { query: o.query.join(" ") } : {}) };
+  }
+  const shipSevValue = (d) => (d.min_severity == null ? "" : SHIP_SEVN[d.min_severity] + (d.sev_exact ? "=" : ""));
+  const shipSevFields = (v) => {
+    if (!v) return {};
+    const exact = v.endsWith("="), n = SHIP_SEVN.indexOf(v.replace(/=$/, ""));
+    return n < 0 ? {} : { min_severity: n, ...(exact ? { sev_exact: true } : {}) };
+  };
+  const shipTarget = (d) => (shipHttp(d.type) ? d.url || "" : (d.type === "syslog" ? (d.protocol || "tcp") + "://" : (d.protocol || "tcp") + "://") + (d.server || ""));
+  // open the Logs page on what a destination sends (one sender at most: the Logs page filters by one)
+  function shipPreview(d) {
+    const f = { ...d, senders: (d.senders || []).slice(0, 1) };
+    state.prefill.logsq = { text: shipFilterText(f), severity: shipSevValue(d) };
+    selectTab("logs");
+  }
+  // the popup of one destination; save(d) stores it (an error text keeps the popup open)
+  function shipEditor(cur, isNew, save, names) {
+    cur = cur || { type: "syslog" };
+    const inp = (v, ph, type) => h("input", { type: type || "text", value: v == null ? "" : String(v), placeholder: ph || "", spellcheck: "false", autocomplete: type === "password" ? "new-password" : "off" });
+    const sel = (opts, v) => { const s = h("select", {}, opts.map(([k, l]) => h("option", { value: k }, l))); s.value = v; if (s.value !== v && v) { s.append(h("option", { value: v }, v)); s.value = v; } return s; };
+    const fld = (label, el, hint) => h("label", { class: "f" }, label, el, hint ? h("span", { class: "hint" }, hint) : null);
+    const name = inp(cur.name, "siem"), type = sel(SHIP_TYPES, cur.type || "syslog");
+    const proto = sel([["tcp", "TCP"], ["udp", "UDP"], ["tls", "TLS"]], cur.protocol || "tcp");
+    const server = inp(cur.server, "10.5.0.20 or log.example.com:6514"), url = inp(cur.url, "https://splunk.example.com:8088");
+    const token = inp(cur.token, "", "password"), index = inp(cur.index, "logdir");
+    const filter = inp(shipFilterText(cur), "failed password host=fw* source=fw1"), sev = sel(SHIP_SEVS, shipSevValue(cur));
+    const start = sel(SHIP_STARTS, cur.start || "now"), on = h("input", { type: "checkbox", checked: !cur.disabled });
+    const rate = inp(cur.rate_limit || "", "no limit", "number"), behind = inp(cur.max_behind_hours || "", "24", "number");
+    const raw = h("input", { type: "checkbox", checked: !!cur.raw }), spoof = h("input", { type: "checkbox", checked: !!cur.spoof_source });
+    const ca = h("textarea", { rows: "4", spellcheck: "false", placeholder: "-----BEGIN CERTIFICATE-----", class: "mono" });
+    ca.value = cur.ca_pem || "";
+    rate.min = "0"; behind.min = "0";
+    const fServer = fld("Server", server, "Port 514 (6514 for TLS) unless given."), fProto = fld("Protocol", proto), fUrl = fld("URL", url), fToken = fld("Token", token), fIndex = fld("Index", index);
+    const fSpoof = h("label", { class: "f check wide" }, spoof, "Send from the sender's address (UDP, IPv4)");
+    const fCA = fld("CA certificate (PEM)", ca, "Empty: the system's.");
+    const sync = () => {
+      const t = type.value, http = shipHttp(t);
+      fServer.hidden = fProto.hidden = http;
+      fUrl.hidden = fToken.hidden = !http;
+      fIndex.hidden = t !== "elastic" && t !== "splunk_hec";
+      proto.querySelector("option[value=udp]").hidden = t !== "syslog";
+      if (t !== "syslog" && proto.value === "udp") proto.value = "tcp";
+      fSpoof.hidden = !(t === "syslog" && proto.value === "udp");
+      fCA.hidden = !(http || proto.value === "tls");
+      url.placeholder = { splunk_hec: "https://splunk.example.com:8088", elastic: "https://es.example.com:9200", loki: "http://loki.example.com:3100" }[t] || "";
+    };
+    type.addEventListener("change", sync); proto.addEventListener("change", sync);
+    const read = () => {
+      const t = type.value, http = shipHttp(t), d = { name: name.value.trim(), type: t };
+      if (http) { if (url.value.trim()) d.url = url.value.trim(); if (token.value) d.token = token.value; } else { d.server = server.value.trim(); if (proto.value !== "tcp") d.protocol = proto.value; }
+      if ((t === "elastic" || t === "splunk_hec") && index.value.trim()) d.index = index.value.trim();
+      if ((http || proto.value === "tls") && ca.value.trim()) d.ca_pem = ca.value.trim();
+      Object.assign(d, shipFilterParse(filter.value), shipSevFields(sev.value));
+      if (start.value !== "now") d.start = start.value;
+      if (Number(behind.value) > 0) d.max_behind_hours = Math.floor(Number(behind.value));
+      if (Number(rate.value) > 0) d.rate_limit = Math.floor(Number(rate.value));
+      if (raw.checked) d.raw = true;
+      if (spoof.checked && !fSpoof.hidden) d.spoof_source = true;
+      if (!on.checked) d.disabled = true;
+      return d;
+    };
+    const check = (d) => {
+      if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(d.name)) return "Name: letters, digits, . _ or - (up to 64).";
+      if ((names || []).some((n) => n.toLowerCase() === d.name.toLowerCase())) return "Another destination is called " + d.name + ".";
+      if (shipHttp(d.type) ? !/^https?:\/\/[^\s/]+/.test(d.url || "") : !d.server) return shipHttp(d.type) ? "URL: https://host:port." : "Server: a host or an address.";
+      if (d.type === "splunk_hec" && !d.token) return "Splunk HEC needs the token.";
+      return "";
+    };
+    const err = h("span", { class: "bad-text" }), testMsg = h("span", { class: "muted small" });
+    dialog(isNew ? "New destination" : "Edit destination " + cur.name, (close) => {
+      const testBtn = h("button", { type: "button", class: "btn", onclick: async () => {
+        const d = read(), m = check(d);
+        err.textContent = m; testMsg.textContent = "";
+        if (m) return;
+        testBtn.disabled = true; testMsg.textContent = "Sending…";
+        try {
+          const r = (await api("POST", "/api/logs/shipping/test", { dest: d })).data.results[0];
+          testMsg.textContent = r.ok ? "Sent." + (r.note ? " " + r.note : "") : ""; err.textContent = r.ok ? "" : "Test failed: " + r.error;
+        } catch (e) { testMsg.textContent = ""; err.textContent = e.message; }
+        testBtn.disabled = false;
+      } }, "Test");
+      const form = h("form", { class: "shipform", onsubmit: (e) => {
+        e.preventDefault();
+        const d = read(), m = check(d) || save(d);
+        if (m) { err.textContent = m; return; }
+        close();
+      } },
+      h("div", { class: "grid" }, fld("Name", name), fld("Type", type), fServer, fProto, fUrl, fToken, fIndex,
+        h("label", { class: "f wide" }, "Filter", filter, h("span", { class: "hint" }, "As on the Logs page. Empty: all.")), fld("Severity", sev),
+        fld("Start", start, isNew ? "Where it starts." : "Only for a new one."), h("label", { class: "f check wide" }, on, "Enabled")),
+      h("details", { class: "shipadv" }, h("summary", {}, "Advanced"),
+        h("div", { class: "grid" }, fld("Rate limit (messages/s)", rate, "Empty: no limit."), fld("Max behind (hours)", behind, "Older ones are skipped."),
+          h("label", { class: "f check wide" }, raw, "Also send the original bytes"), fSpoof, fCA)),
+      h("div", { class: "toolbar right" }, err, testMsg, h("span", { class: "grow" }), testBtn,
+        h("button", { type: "button", class: "btn", onclick: () => { const d = read(); close(); shipPreview(d); } }, "Preview"),
+        h("button", { type: "submit", class: "btn primary" }, "Save"), h("button", { type: "button", class: "btn", onclick: close }, "Cancel")));
+      if (cur.advanced || cur.raw || cur.spoof_source || cur.ca_pem || cur.rate_limit || cur.max_behind_hours) form.querySelector("details").open = true;
+      return [form];
+    });
+    sync();
+    name.focus();
+  }
+  // the table of destinations: get() is what is saved; a change sends a change event up, which saves the page
+  function shippingForm(list) {
+    const data = (list || []).map((d) => ({ ...d }));
+    const box = h("div", {});
+    const changed = () => box.dispatchEvent(new Event("change", { bubbles: true }));
+    const names = (except) => data.filter((d) => d !== except).map((d) => d.name);
+    const edit = (d) => shipEditor(d, false, (nd) => { data[data.indexOf(d)] = nd; render(); changed(); return ""; }, names(d));
+    const add = (pre) => shipEditor(pre, true, (nd) => { data.push(nd); render(); changed(); return ""; }, names());
+    function menu(d) {
+      return [["Edit", () => edit(d)], ["Preview", () => shipPreview(d)], ["Duplicate", () => add({ ...d, name: d.name + "-copy" })],
+        [d.disabled ? "Enable" : "Disable", () => { if (d.disabled) delete d.disabled; else d.disabled = true; render(); changed(); }],
+        ["Monitor", () => selectTab("shipping")], "-",
+        ["Delete", () => { data.splice(data.indexOf(d), 1); render(); changed(); }, "danger"]];
+    }
+    function render() {
+      const sevText = (d) => (SHIP_SEVS.find((x) => x[0] === shipSevValue(d)) || ["", shipSevValue(d)])[1];
+      clear(box).append(h("div", { class: "toolbar nomargin" }, h("button", { type: "button", class: "btn", onclick: () => add() }, "＋ New destination")),
+        data.length ? h("div", { class: "scroll" }, h("table", { class: "shipcfg" },
+          h("thead", {}, h("tr", {}, ["Name", "Type", "Target", "Filter", "Severity", "On"].map((x) => h("th", {}, x)))),
+          h("tbody", {}, data.map((d) => h("tr", { class: d.disabled ? "off" : "", oncontextmenu: rowMenu(menu(d)), ondblclick: () => edit(d) },
+            h("td", {}, h("button", { type: "button", class: "qlink", onclick: () => edit(d) }, d.name)),
+            h("td", {}, (SHIP_TYPES.find((t) => t[0] === d.type) || ["", d.type])[1]),
+            h("td", { class: "mono" }, shipTarget(d)),
+            h("td", { class: "mono" }, shipFilterText(d) || "everything"),
+            h("td", {}, sevText(d)),
+            h("td", {}, d.disabled ? "no" : "yes"))))))
+          : h("div", { class: "empty" }, "No destinations: nothing is shipped."));
+    }
+    render();
+    // sent here from the Logs page or Monitor ▸ Senders: a new destination with that filter
+    if (state.prefill.ship) { const p = state.prefill.ship; state.prefill.ship = null; setTimeout(() => add(p), 0); }
+    if (state.prefill.shipEdit) { const n = state.prefill.shipEdit; state.prefill.shipEdit = null; const d = data.find((x) => x.name === n); if (d) setTimeout(() => edit(d), 0); }
+    return { el: box, get: () => data };
+  }
+
   const makeConfigView = (only) => {
     let holder, status, collect = null, refreshSNMP = () => {}, refreshSyslog = () => {}, refreshDNSReg = () => {}, refreshLLDP = () => {};
     const tab = only;
@@ -3062,6 +3217,7 @@
       const ldap = ldapTab(cfg.web);
       const senders = fieldset(SENDER_FIELDS, { senders: (set.logs || {}).senders });
       const logAlerts = fieldset(LOGALERT_FIELDS, { logalerts: (set.logs || {}).alerts });
+      const ship = shippingForm((set.logs || {}).destinations);
       const cluster = fieldset(CLUSTER_FIELDS, cfg.cluster || {});
       const snmp = fieldset(SNMP_FIELDS, { snmp_communities: set.snmp_communities, snmp_acl: set.snmp_acl, snmp_contact: set.snmp_contact, location: (cfg.snmp || {}).location });
       const prom = fieldset(PROM_FIELDS, { metrics_acl: set.metrics_acl });
@@ -3089,10 +3245,11 @@
       const logsShared = () => {
         const snd = senders.get().senders || [], al = logAlerts.get().logalerts || [], v = logSet.get();
         const num = (x, def) => { x = Math.trunc(Number(x)); return Number.isFinite(x) && x !== def ? x : 0; };
-        const { senders: _s, alerts: _a, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
+        const dst = ship.get();
+        const { senders: _s, alerts: _a, destinations: _ds, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
         const pct = Number(v.dir_max_percent) > 0 && Number(v.dir_max_percent) !== 90 ? Math.min(100, Math.floor(Number(v.dir_max_percent))) : 0;
         const mpct = Number(v.mem_max_percent) > 0 && Number(v.mem_max_percent) !== 70 ? Math.min(100, Math.floor(Number(v.mem_max_percent))) : 0;
-        const out = { ...rest, ...(snd.length ? { senders: snd } : {}), ...(al.length ? { alerts: al } : {}), ...(num(v.retention_days, 0) > 0 ? { retention_days: num(v.retention_days, 0) } : {}),
+        const out = { ...rest, ...(snd.length ? { senders: snd } : {}), ...(al.length ? { alerts: al } : {}), ...(dst.length ? { destinations: dst } : {}), ...(num(v.retention_days, 0) > 0 ? { retention_days: num(v.retention_days, 0) } : {}),
           ...(num(v.list_limit, 1000) ? { list_limit: Math.min(5000, Math.max(100, num(v.list_limit, 1000))) } : {}), ...(v.follow ? { follow: true } : {}), ...(pct ? { dir_max_percent: pct } : {}), ...(mpct ? { mem_max_percent: mpct } : {}), ...(num(v.udp_port, 514) ? { udp_port: num(v.udp_port, 514) } : {}), ...(num(v.tcp_port, 514) ? { tcp_port: num(v.tcp_port, 514) } : {}),
           ...(num(v.tls_port, 6514) ? { tls_port: num(v.tls_port, 6514) } : {}) };
         return Object.keys(out).length ? { logs: out } : {};
@@ -3329,6 +3486,7 @@
         ["groups", "Gateway groups", h("div", {}, groupsEl)],
         ["senders", "Senders", h("div", {}, section("Senders", senders.el), section("Pattern alerts", logAlerts.el,
           h("p", { class: "hint" }, "Every minute each node counts the messages it received that match, in the minutes given. Reaching the count opens an alert; it closes when the count falls under. Words: and, or, not (or !word); the host takes * wildcards; severity is that severe or worse.")))],
+        ["shipping", "Shipping", section("Destinations", ship.el)],
         ["web", "Web GUI", h("div", {}, section("Web GUI", web.el), certBox)],
         ["sso", "SSO", section("Single sign-on",
           sso.el)],
@@ -3410,7 +3568,7 @@
       },
     };
   };
-  for (const id of ["general", "groups", "mcp", "privacy", "senders", "web", "sso", "ldap", "monitoring", "alerts", "backup"]) VIEWS["cfg_" + id] = makeConfigView(id);
+  for (const id of ["general", "groups", "mcp", "privacy", "senders", "shipping", "web", "sso", "ldap", "monitoring", "alerts", "backup"]) VIEWS["cfg_" + id] = makeConfigView(id);
 
   // ── shared helpers for the management pages ───────────────────────────────
   // Nothing is said when every node answered (the Node menu says "Cluster"); when one could not, which and why, since the
@@ -4424,13 +4582,21 @@
       qIn.value = filterText(); sevSel.value = kept.severity;
       load();
     }
+    // a new shipping destination with what the page is filtered on now, or, with no filter, this message's host and program (Configure ▸ Shipping)
+    function shipLikeThis(m) {
+      const f = shipFilterParse(filterText());
+      if (!Object.keys(f).length) { if (m.host) f.host = m.host; if (m.program) f.program = m.program; }
+      state.prefill.ship = { type: "syslog", ...f, ...shipSevFields(kept.severity) };
+      selectTab("cfg_shipping");
+    }
     const sevCls = (n) => "sev sev-" + (SEVNAMES.indexOf(n) < 0 ? 6 : SEVNAMES.indexOf(n));
     const showTime = () => kept.range !== "15m" && kept.range !== "1h" && kept.range !== "6h";
 
     function messageMenu(m) {
       const own = [["Only this host", () => set({ host: m.host || "" })], ["Only this program", () => set({ program: m.program || "" })],
         ["This severity or worse", () => set({ severity: m.severity })], ["Only this sender", () => set({ source: m.source || "" })],
-        ["Copy message", () => { try { navigator.clipboard.writeText(m.message); } catch (_) { /* no clipboard */ } }]].filter((it) => !(it[0] === "Only this host" && !m.host) && !(it[0] === "Only this program" && !m.program));
+        ["Copy message", () => { try { navigator.clipboard.writeText(m.message); } catch (_) { /* no clipboard */ } }],
+        ["Ship messages like this…", () => shipLikeThis(m)]].filter((it) => !(it[0] === "Only this host" && !m.host) && !(it[0] === "Only this program" && !m.program));
       return m.source ? [...own, "-", ...netToolMenu(m.source)] : own;
     }
     // the host column: what the sender is called (the first part of its DNS name, else its name in Configure ▸ Senders), the same name the Senders
@@ -4593,6 +4759,10 @@
         qIn = h("input", { type: "text", class: "qfilter qlogq", placeholder: "failed password and not root   host=sw* program=sshd", "aria-label": "Filter messages", spellcheck: "false", autocomplete: "off",
           onkeydown: (e) => { if (e.key === "Enter") { clearTimeout(typed); apply(); } }, oninput: () => { clearTimeout(typed); typed = setTimeout(apply, 600); } });
         if (state.prefill.logs != null) { kept.source = state.prefill.logs; state.prefill.logs = null; }   // sent here from the Topology page: one sender's messages
+        if (state.prefill.logsq != null) {   // sent here by Preview on Configure ▸ Shipping: what a destination sends
+          const p = state.prefill.logsq; state.prefill.logsq = null;
+          qIn.value = p.text; readFilter(); kept.severity = p.severity || ""; kept.page = 0;
+        }
         qIn.value = filterText();
         rangeSel = h("select", { "aria-label": "Time range", onchange: () => { kept.range = rangeSel.value; kept.page = 0; load(); } }, RANGES.map(([id, text]) => h("option", { value: id }, text)));
         rangeSel.value = kept.range;
@@ -4609,6 +4779,81 @@
         if (following) { if (Date.now() - followAt >= FOLLOW_MS) await followStep(); return; }
         if (Date.now() - lastAt >= REFRESH_MS && document.activeElement !== qIn) await load();
       },
+    };
+  })();
+
+  // ── Shipping, Monitor  (CLI: --logs-ship; API: GET /api/logs/shipping) ────────────────────────
+  // Every destination on every node: is it keeping up?  Right-click a row for a test message, to send again from a time, or to skip to now.
+  VIEWS.shipping = (() => {
+    const REFRESH_MS = 5000;
+    let box, bad, lastAt = 0, seq = 0, sig = "";
+    const count = (v) => (Number(v) || 0).toLocaleString();
+    const ago = (u) => { const s = Math.max(0, Math.floor(Date.now() / 1000 - u)); return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+    const behind = (s) => (!s ? "–" : s < 90 ? s + " s" : s < 5400 ? Math.round(s / 60) + " min" : s < 172800 ? (s / 3600).toFixed(1) + " h" : (s / 86400).toFixed(1) + " d");
+    const STATE = { ok: ["ok", "OK"], behind: ["warn", "BEHIND"], error: ["bad", "ERROR"], disabled: ["", "OFF"], starting: ["info", "STARTING"] };
+    async function act(kind, body, cell) {
+      cell.textContent = "…"; cell.className = "muted small";
+      try {
+        const r = (await api("POST", "/api/logs/shipping/" + kind, body)).data;
+        const fails = (r.results || []).filter((x) => !x.ok).map((x) => x.node + ": " + x.error).concat((r.node_errors || []).map((x) => x.node + ": " + x.error));
+        cell.textContent = fails.length ? fails.join("; ") : kind === "test" ? "Test sent." : "Moved.";
+        cell.className = fails.length ? "bad-text small" : "muted small";
+      } catch (e) { if (e.message !== "unauthenticated") { cell.textContent = e.message; cell.className = "bad-text small"; } }
+      sig = ""; load();
+    }
+    function resend(d, cell) {
+      dialog("Send again: " + d.name + " on " + d.node, (close) => {
+        const from = h("select", {}, [["1h", "The last hour"], ["6h", "The last 6 hours"], ["24h", "The last 24 hours"], ["7d", "The last 7 days"], ["oldest", "Everything kept"]].map(([v, l]) => h("option", { value: v }, l)));
+        return [h("form", { onsubmit: (e) => { e.preventDefault(); close(); act("reset", { name: d.name, node: d.addr || d.node, from: from.value }, cell); } },
+          h("div", { class: "grid" }, h("label", { class: "f wide" }, "Send again from", from)),
+          h("div", { class: "toolbar right" }, h("span", { class: "grow" }), h("button", { type: "submit", class: "btn primary" }, "Send again"), h("button", { type: "button", class: "btn", onclick: close }, "Cancel")))];
+      });
+    }
+    function draw(r) {
+      const rows = r.destinations || [];
+      const errs = r.node_errors || [];
+      const s = JSON.stringify([rows.map((d) => [d.name, d.node, d.state, d.sent, d.per_min, d.behind_s, d.skipped, d.last_sent, d.last_error, d.note]), errs]);
+      if (s === sig) return;
+      sig = s;
+      const notes = new Map([...box.querySelectorAll("td[data-k]")].map((c) => [c.dataset.k, [c.textContent, c.className]]));
+      const csv = () => [["Destination", "Node", "Type", "Target", "State", "Sent", "Per minute", "Behind (s)", "Skipped", "Last sent (UTC)", "Last error"],
+        ...rows.map((d) => [d.name, d.node, d.type, d.target, d.state, d.sent, d.per_min, d.behind_s, d.skipped, d.last_sent ? new Date(d.last_sent * 1000).toISOString() : "", d.last_error || ""])];
+      const body = rows.length ? h("div", { class: "scroll" }, h("table", { class: "shipmon" },
+        h("thead", {}, h("tr", {}, ["Destination", "Node", "Type", "Target", "State", "Per min", "Sent", "Behind", "Last sent", "Skipped", ""].map((x, i) => h("th", { class: i >= 5 && i <= 9 && i !== 8 ? "num" : "" }, x)))),
+        h("tbody", {}, rows.map((d) => {
+          const k = d.name + "\u0000" + (d.addr || d.node), st = STATE[d.state] || ["", d.state.toUpperCase()];
+          const cell = h("td", { "data-k": k, class: (notes.get(k) || [])[1] || "muted small" }, (notes.get(k) || [""])[0]);
+          const tip = [d.last_error ? "Last error" + (d.error_at ? " (" + ago(d.error_at) + ")" : "") + ": " + d.last_error : "", d.note, "Position: " + d.cursor].filter(Boolean).join("\n");
+          return h("tr", { class: st[0] === "bad" ? "bad" : st[0] === "warn" ? "warn" : d.state === "disabled" ? "off" : "", title: tip,
+            oncontextmenu: rowMenu([["Send a test message", () => act("test", { name: d.name, node: d.addr || d.node }, cell)], ["Send again from…", () => resend(d, cell)],
+              ["Skip to now", () => act("reset", { name: d.name, node: d.addr || d.node, from: "now" }, cell)], "-", ["Edit", () => { state.prefill.shipEdit = d.name; selectTab("cfg_shipping"); }]]) },
+            h("td", {}, d.name), h("td", { title: d.addr || "" }, d.node), h("td", {}, d.type), h("td", { class: "mono" }, d.target), h("td", {}, pill(st[1], st[0] + " tiny")),
+            h("td", { class: "num" }, count(d.per_min)), h("td", { class: "num" }, count(d.sent)), h("td", { class: "num" }, behind(d.behind_s)),
+            h("td", {}, d.last_sent ? ago(d.last_sent) : "never"), h("td", { class: "num" }, d.skipped ? count(d.skipped) : "–"), cell);
+        }))))
+        : h("div", { class: "empty" }, "No destinations. Add one on Configure ▸ Shipping.");
+      const nodeErr = errs.length ? h("span", { class: "bad-text small", title: errs.map((e) => e.node + ": " + e.error).join("\n") }, errs.length + " of " + r.nodes + " nodes did not answer") : null;
+      clear(box).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Shipping")), nodeErr, h("span", { class: "grow" }), rows.length ? csvButton("Shipping", csv) : null), h("div", { class: "body flush" }, body)));
+    }
+    async function load() {
+      const my = ++seq;
+      try {
+        const r = (await api("GET", "/api/logs/shipping")).data;
+        if (my !== seq) return;
+        lastAt = Date.now();
+        bad.textContent = "";
+        draw(r);
+      } catch (e) { if (e.message !== "unauthenticated") bad.textContent = e.message; }
+    }
+    return {
+      mount(main) {
+        sig = "";
+        bad = h("p", { class: "bad-text" });
+        box = h("div", {});
+        main.append(bad, box);
+        load();
+      },
+      async poll() { if (Date.now() - lastAt >= REFRESH_MS) await load(); },
     };
   })();
 
@@ -4661,7 +4906,7 @@
       clear(bodyEl).append(list.length
         ? h("div", { class: "scroll" }, h("table", {},
           h("thead", {}, h("tr", {}, ["Name", "Address", "Proto", "Last seen", "Messages", "Node"].map((x, i) => h("th", { class: i === 4 ? "num" : "" }, x)))),
-          h("tbody", {}, list.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => only(e.addr)], "-", ...netToolMenu(e.addr)]) },
+          h("tbody", {}, list.map((e) => h("tr", { class: Date.now() / 1000 - e.last_seen > 600 ? "muted" : "", oncontextmenu: rowMenu([["Only this sender", () => only(e.addr)], ["Ship this sender…", () => { state.prefill.ship = { type: "syslog", senders: [e.addr] }; selectTab("cfg_shipping"); }], "-", ...netToolMenu(e.addr)]) },
             h("td", { title: [e.rdns ? "DNS name: " + e.rdns : "", e.name && e.name !== e.rev ? "Senders entry: " + e.name : "", e.host ? "Its messages say: " + e.host : ""].filter(Boolean).join("\n") }, e.rev || e.name || e.host || "–"),
             h("td", { class: "mono" }, e.addr), h("td", {}, e.via || "–"),
             h("td", {}, ago(e.last_seen)), h("td", { class: "num" }, count(e.messages)), h("td", { class: "mono" }, e.node || "–"))))))

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -225,6 +226,56 @@ func ldSeriesStep(span int64) int64 {
 	return (step + 86399) / 86400 * 86400
 }
 
+// GET /api/logs/shipping: every destination on every node.
+func (w *WebServer) handleLogShipping(rw http.ResponseWriter, r *http.Request, s *session) {
+	if !w.logGate(rw) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+	st, errs, n := ldSvc.AllShipStatus(ctx)
+	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": map[string]any{"destinations": st, "node_errors": errs, "nodes": n}})
+}
+
+// POST /api/logs/shipping/test {name, node} or {dest} (a destination from the form, not saved yet: from this node), and
+// POST /api/logs/shipping/reset {name, node, from}.
+func (w *WebServer) handleLogShipOp(kind string) func(http.ResponseWriter, *http.Request, *session) {
+	return func(rw http.ResponseWriter, r *http.Request, s *session) {
+		if !w.logGate(rw) {
+			return
+		}
+		var op ldShipOp
+		if err := json.NewDecoder(http.MaxBytesReader(rw, r.Body, 1<<20)).Decode(&op); err != nil {
+			jsonError(rw, http.StatusBadRequest, "bad request")
+			return
+		}
+		if op.Dest == nil && strings.TrimSpace(op.Name) == "" {
+			jsonError(rw, http.StatusBadRequest, "name: which destination")
+			return
+		}
+		if kind == "shipreset" {
+			if op.Dest != nil {
+				jsonError(rw, http.StatusBadRequest, "a reset needs the name of a saved destination")
+				return
+			}
+			if _, err := ldShipStart(op.From, time.Now()); err != nil {
+				jsonError(rw, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 40*time.Second)
+		defer cancel()
+		res, errs := ldSvc.ShipAll(ctx, kind, op)
+		what := map[string]string{"shiptest": "test message", "shipreset": "cursor moved to " + firstNonEmpty(op.From, "now")}[kind]
+		name := op.Name
+		if op.Dest != nil {
+			name = op.Dest.Name + " (not saved)"
+		}
+		infof("logs: shipping %s: %s, by %s", name, what, s.user)
+		writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": map[string]any{"results": res, "node_errors": errs}})
+	}
+}
+
 func (w *WebServer) handleLogSenders(rw http.ResponseWriter, r *http.Request, s *session) {
 	if !w.logGate(rw) {
 		return
@@ -330,6 +381,14 @@ func logMCPTools() []mcpTool {
 			noNode: true,
 			run: func(c *mcpCtx) (any, error) {
 				b, err := c.get("/api/logs/senders")
+				return asAny(b), err
+			}},
+		{name: "logs_shipping", title: "Log shipping status",
+			desc: "Where each node sends the syslog on to (Configure ▸ Shipping): for every destination on every node, its state (ok, behind, error, disabled), messages sent " +
+				"(in total and in the last minute), how far behind it is (seconds), messages skipped because it fell too far behind, when it last sent and its last error.",
+			noNode: true,
+			run: func(c *mcpCtx) (any, error) {
+				b, err := c.get("/api/logs/shipping")
 				return asAny(b), err
 			}},
 		{name: "logs_status", title: "Log collector status",

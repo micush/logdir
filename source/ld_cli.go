@@ -16,6 +16,10 @@ import (
 //
 //	--logs                                  the collector on every node: what it listens on, counters, the senders
 //	--logs-search "words" [--logs-args "k=v&k=v"]
+//	--logs-ship                             every shipping destination on every node: state, sent, behind, last error
+//	--logs-ship-test NAME [--node N]        send a test message to a destination (from every node, or one)
+//	--logs-ship-reset NAME --logs-ship-from now|oldest|6h [--node N]
+//	                                        move where a destination's sending carries on from (send again, or skip)
 //	                                        a search over every node; the words are those of the API (and, or, not); the arguments:
 //	                                        range=1h from= to= host=sw* program=sshd severity=err source=10.0.0.5 limit=200 oldest_first=1
 
@@ -50,6 +54,98 @@ func (m *Mgmt) LdOpStatus() (any, error) {
 	st, errs := ldSvc.AllStatus(ctx)
 	sn, errs2 := ldSvc.AllSenders(ctx)
 	return map[string]any{"nodes": st, "senders": sn, "node_errors": append(errs, errs2...)}, nil
+}
+
+// LdOpShip is the shipping status for the CLI.
+func (m *Mgmt) LdOpShip() (any, error) {
+	if ldSvc == nil {
+		return nil, fmt.Errorf("no log collector in this process")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	st, errs, n := ldSvc.AllShipStatus(ctx)
+	return map[string]any{"destinations": st, "node_errors": errs, "nodes": n}, nil
+}
+
+// LdOpShipDo is a test or a reset from the CLI.
+func (m *Mgmt) LdOpShipDo(kind string, a ldShipOp, actor string) (any, error) {
+	if ldSvc == nil {
+		return nil, fmt.Errorf("no log collector in this process")
+	}
+	a.Dest = nil
+	if kind == "shipreset" {
+		if _, err := ldShipStart(a.From, time.Now()); err != nil {
+			return nil, err
+		}
+	}
+	if _, ok := ldSvc.destination(a.Name); !ok {
+		return nil, fmt.Errorf("no destination %q (Configure ▸ Shipping)", a.Name)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
+	defer cancel()
+	res, errs := ldSvc.ShipAll(ctx, kind, a)
+	infof("logs: shipping %s: %s, by %s", a.Name, map[string]string{"shiptest": "test message", "shipreset": "cursor moved to " + firstNonEmpty(a.From, "now")}[kind], actor)
+	return map[string]any{"results": res, "node_errors": errs}, nil
+}
+
+func runLogsShip(sock string, f *cliFlags) {
+	if name := firstNonEmpty(*f.logsShipTest, *f.logsShipReset); name != "" {
+		kind, from := "logs.shiptest", ""
+		if *f.logsShipReset != "" {
+			kind, from = "logs.shipreset", *f.logsShipFrom
+			if from == "" {
+				fatalf("--logs-ship-reset needs --logs-ship-from now, oldest or a time back (6h, 2d)")
+			}
+		}
+		var out struct {
+			Results    []LdShipResult `json:"results"`
+			NodeErrors []NodeError    `json:"node_errors"`
+		}
+		decode(op(sock, kind, ldShipOp{Name: name, Node: *f.node, From: from}), &out)
+		bad := false
+		for _, r := range out.Results {
+			if r.OK {
+				fmt.Printf("%s: done%s\n", r.Node, map[bool]string{true: " (" + r.Note + ")", false: ""}[r.Note != ""])
+			} else {
+				fmt.Printf("%s: FAILED: %s\n", r.Node, r.Error)
+				bad = true
+			}
+		}
+		for _, e := range out.NodeErrors {
+			fmt.Printf("NODE DID NOT ANSWER: %s: %s\n", e.Node, e.Error)
+			bad = true
+		}
+		if len(out.Results) == 0 && *f.node != "" {
+			fatalf("no node called %s answered", *f.node)
+		}
+		if bad {
+			os.Exit(1)
+		}
+		return
+	}
+	var out struct {
+		Destinations []LdShipStatus `json:"destinations"`
+		NodeErrors   []NodeError    `json:"node_errors"`
+	}
+	decode(op(sock, "logs.ship", nil), &out)
+	if len(out.Destinations) == 0 {
+		fmt.Println("no shipping destinations (Configure ▸ Shipping)")
+	}
+	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
+	if len(out.Destinations) > 0 {
+		fmt.Fprintln(w, "DESTINATION\tNODE\tTYPE\tTARGET\tSTATE\tSENT\tPER MIN\tBEHIND\tSKIPPED\tLAST ERROR")
+	}
+	for _, d := range out.Destinations {
+		behind := "-"
+		if d.BehindS > 0 {
+			behind = (time.Duration(d.BehindS) * time.Second).String()
+		}
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%d\t%s\n", d.Name, d.Node, d.Type, d.Target, d.State, d.Sent, d.PerMin, behind, d.Skipped, d.LastError)
+	}
+	w.Flush()
+	for _, e := range out.NodeErrors {
+		fmt.Printf("NODE DID NOT ANSWER: %s: %s\n", e.Node, e.Error)
+	}
 }
 
 func runLogs(sock string, f *cliFlags) {

@@ -926,3 +926,14 @@ table.evencols th.w-node { width: 26%; }
 table.evencols th.w-ver { width: 11%; }
 table.evencols th.w-pill { width: 15%; }
 table.evencols td { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* Configure ▸ Shipping and Monitor ▸ Shipping */
+table.shipcfg tr.off td { opacity: .55; }
+table.shipcfg td.mono, table.shipmon td.mono { max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+table.shipmon tr.warn td { color: var(--warn); }
+table.shipmon tr.bad td { color: var(--bad); }
+table.shipmon tr.off td { opacity: .55; }
+.shipform textarea { width: 100%; }
+.shipadv { margin: .5rem 0; }
+.shipadv summary { cursor: pointer; color: var(--muted); }
+.toolbar.right { justify-content: flex-end; flex-wrap: wrap; gap: .5rem; }

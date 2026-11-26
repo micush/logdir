@@ -47,6 +47,8 @@ type LogsConfig struct {
 	// Alerts are the pattern alerts: when a search matches at least Count messages in the last WindowMin minutes (on all nodes
 	// together), an alert opens; it closes when the count falls under.
 	Alerts []LogAlertCfg `json:"alerts,omitempty"`
+	// Destinations are where each node sends on what it received (Configure ▸ Shipping, ld_ship.go).
+	Destinations []LogDestCfg `json:"destinations,omitempty"`
 }
 
 type LogSenderCfg struct {
@@ -75,6 +77,7 @@ func (c *LogsConfig) clone() *LogsConfig {
 	d := *c
 	d.Senders = append([]LogSenderCfg(nil), c.Senders...)
 	d.Alerts = append([]LogAlertCfg(nil), c.Alerts...)
+	d.Destinations = cloneDests(c.Destinations)
 	return &d
 }
 
@@ -186,7 +189,7 @@ func (c *LogsConfig) Validate() error {
 			return fmt.Errorf("logs: alert %s: min_severity must be 0 to 7", n)
 		}
 	}
-	return nil
+	return validateDestinations(c.Destinations)
 }
 
 func validLogDir(d string) error {

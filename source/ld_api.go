@@ -45,6 +45,8 @@ func (s *ldService) parseLdQuery(v url.Values) (LdQuery, error) {
 	if x := strings.TrimSpace(v.Get("severity")); x != "" {
 		if strings.HasSuffix(x, "=") { // "warning=": only warnings, not warning or worse
 			x, q.SevExact = strings.TrimSpace(strings.TrimSuffix(x, "=")), true
+		} else if strings.HasSuffix(x, "-") { // "info-": info or less severe (info and debug)
+			x, q.SevLess = strings.TrimSpace(strings.TrimSuffix(x, "-")), true
 		}
 		if q.MinSev = parseSevName(x); q.MinSev < 0 {
 			return q, fmt.Errorf("severity: %q is not one of emerg, alert, crit, err, warning, notice, info, debug (or 0 to 7)", x)
@@ -151,6 +153,8 @@ func (w *WebServer) handleLogTail(rw http.ResponseWriter, r *http.Request, s *se
 	if x := strings.TrimSpace(v.Get("severity")); x != "" {
 		if strings.HasSuffix(x, "=") {
 			x, q.SevExact = strings.TrimSpace(strings.TrimSuffix(x, "=")), true
+		} else if strings.HasSuffix(x, "-") {
+			x, q.SevLess = strings.TrimSpace(strings.TrimSuffix(x, "-")), true
 		}
 		if q.MinSev = parseSevName(x); q.MinSev < 0 {
 			jsonError(rw, http.StatusBadRequest, "severity: not a severity")
@@ -399,7 +403,7 @@ func logMCPTools() []mcpTool {
 				return asAny(b), err
 			}},
 		{name: "logs_status", title: "Log collector status",
-			desc:   "The state of the log collector on every node: what it listens on, messages received (by udp, tcp and tls), refused and dropped, what is stored and how much disk it uses, and the oldest message each node holds.",
+			desc:   "The state of the log collector on every node: what it listens on, messages received (by udp, tcp and tls), refused and dropped, how many each drop rule kept out (drop_rules: messages that match one are never stored, so a search cannot find them), what is stored and how much disk it uses, and the oldest message each node holds.",
 			noNode: true,
 			run: func(c *mcpCtx) (any, error) {
 				b, err := c.get("/api/logs/status")

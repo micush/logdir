@@ -49,6 +49,8 @@ type LogsConfig struct {
 	Alerts []LogAlertCfg `json:"alerts,omitempty"`
 	// Destinations are where each node sends on what it received (Configure ▸ Shipping, ld_ship.go).
 	Destinations []LogDestCfg `json:"destinations,omitempty"`
+	// DropRules: messages that match one are not kept (ld_drop.go).
+	DropRules []LogDropCfg `json:"drop_rules,omitempty"`
 }
 
 type LogSenderCfg struct {
@@ -78,6 +80,7 @@ func (c *LogsConfig) clone() *LogsConfig {
 	d.Senders = append([]LogSenderCfg(nil), c.Senders...)
 	d.Alerts = append([]LogAlertCfg(nil), c.Alerts...)
 	d.Destinations = cloneDests(c.Destinations)
+	d.DropRules = cloneDrops(c.DropRules)
 	return &d
 }
 
@@ -188,6 +191,9 @@ func (c *LogsConfig) Validate() error {
 		if a.MinSev != nil && (*a.MinSev < 0 || *a.MinSev > 7) {
 			return fmt.Errorf("logs: alert %s: min_severity must be 0 to 7", n)
 		}
+	}
+	if err := validateDropRules(c.DropRules); err != nil {
+		return err
 	}
 	return validateDestinations(c.Destinations)
 }

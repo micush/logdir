@@ -37,7 +37,7 @@ func (f *ldFilter) key() string {
 		return f.hkey
 	}
 	var b strings.Builder
-	fmt.Fprintf(&b, "%q\x00%q\x00%q\x00%d\x00%v\x00%q\x00", f.expr, f.host, f.prog, f.minSev, f.sevExact, f.src)
+	fmt.Fprintf(&b, "%q\x00%q\x00%q\x00%d\x00%v\x00%v\x00%q\x00", f.expr, f.host, f.prog, f.minSev, f.sevExact, f.sevLess, f.src)
 	set := func(m map[string]bool) {
 		if m == nil {
 			b.WriteString("-\x00")

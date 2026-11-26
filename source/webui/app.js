@@ -3202,6 +3202,107 @@
     return { el: box, get: () => data };
   }
 
+  // ── Configure ▸ Senders ▸ Drop rules (settings.logs.drop_rules, ld_drop.go): messages that match one are not kept ─────────────
+  // the severities a rule can have (the Logs page has them too); "info-" is info or less severe, "debug=" debug only
+  const DROP_SEVS = [["", "Any severity"], ["warning-", "Warning or less severe"], ["notice-", "Notice or less severe"], ["info-", "Info and debug"], ["debug=", "Debug only"]];
+  const dropSevValue = (d) => (d.severity == null ? "" : SHIP_SEVN[d.severity] + ({ exact: "=", less: "-" }[d.sev_match] || ""));
+  function dropSevFields(v) {
+    const m = /^([a-z]+)([=-]?)$/.exec(v || ""), n = m ? SHIP_SEVN.indexOf(m[1]) : -1;
+    return n < 0 ? {} : { severity: n, ...(m[2] === "=" ? { sev_match: "exact" } : m[2] === "-" ? { sev_match: "less" } : {}) };
+  }
+  function dropSevText(v) {
+    const k = DROP_SEVS.find((x) => x[0] === v);
+    if (k) return k[1];
+    const n = v.replace(/[=-]$/, "");
+    return n.charAt(0).toUpperCase() + n.slice(1) + (v.endsWith("=") ? " only" : v.endsWith("-") ? " or less severe" : " or worse");
+  }
+  // open the Logs page on what a rule would have dropped in the last day (one sender at most: the Logs page filters by one)
+  function dropPreview(d) {
+    state.prefill.logsq = { text: shipFilterText({ ...d, senders: (d.senders || []).slice(0, 1) }), severity: dropSevValue(d), range: "1d" };
+    selectTab("logs");
+  }
+  function dropEditor(cur, isNew, save, names) {
+    cur = cur || {};
+    const inp = (v, ph) => h("input", { type: "text", value: v == null ? "" : String(v), placeholder: ph || "", spellcheck: "false", autocomplete: "off" });
+    const name = inp(cur.name, "keepalives"), filter = inp(shipFilterText(cur), "keepalive program=bgpd host=rtr*");
+    const sev = h("select", {}, DROP_SEVS.map(([k, l]) => h("option", { value: k }, l)));
+    const sv = dropSevValue(cur);
+    if (!DROP_SEVS.some((x) => x[0] === sv)) sev.append(h("option", { value: sv }, dropSevText(sv)));
+    sev.value = sv;
+    const on = h("input", { type: "checkbox", checked: !cur.disabled });
+    const read = () => {
+      const d = { name: name.value.trim(), ...shipFilterParse(filter.value), ...dropSevFields(sev.value) };
+      if (!on.checked) d.disabled = true;
+      return d;
+    };
+    const check = (d) => {
+      if (!d.name || d.name.length > 64) return "Name: 1 to 64 characters.";
+      if ((names || []).some((n) => n.toLowerCase() === d.name.toLowerCase())) return "Another rule is called " + d.name + ".";
+      if (!d.query && !d.host && !d.program && !(d.senders || []).length && d.severity == null) return "A rule needs a filter or a severity: it would drop everything.";
+      return "";
+    };
+    const err = h("span", { class: "bad-text" });
+    dialog(isNew ? "New drop rule" : "Edit drop rule " + cur.name, (close) => {
+      const form = h("form", { class: "shipform", onsubmit: (e) => {
+        e.preventDefault();
+        const d = read(), m = check(d) || save(d);
+        if (m) { err.textContent = m; return; }
+        close();
+      } },
+      h("div", { class: "grid" }, h("label", { class: "f" }, "Name", name), h("label", { class: "f" }, "Severity", sev),
+        h("label", { class: "f wide" }, "Filter", filter, h("span", { class: "hint" }, "As on the Logs page.")), h("label", { class: "f check wide" }, on, "Enabled")),
+      h("div", { class: "toolbar right" }, err, h("span", { class: "grow" }),
+        h("button", { type: "button", class: "btn", onclick: () => { const d = read(); close(); dropPreview(d); } }, "Preview"),
+        h("button", { type: "submit", class: "btn primary" }, "Save"), h("button", { type: "button", class: "btn", onclick: close }, "Cancel")));
+      return [form];
+    });
+    name.focus();
+  }
+  // the table of drop rules, with what each dropped on every node since it started: get() is what is saved; a change saves the page
+  function dropForm(list) {
+    const count = (v) => (Number(v) || 0).toLocaleString();
+    const ago = (ms) => { const s = Math.max(0, Math.floor((Date.now() - ms) / 1000)); return s < 90 ? s + " s ago" : s < 5400 ? Math.round(s / 60) + " min ago" : s < 172800 ? Math.round(s / 3600) + " h ago" : Math.round(s / 86400) + " d ago"; };
+    const data = (list || []).map((d) => ({ ...d }));
+    const box = h("div", {});
+    let counts = null;   // lower-case name -> { n, last } over the nodes
+    const changed = () => box.dispatchEvent(new Event("change", { bubbles: true }));
+    const names = (except) => data.filter((d) => d !== except).map((d) => d.name);
+    const edit = (d) => dropEditor(d, false, (nd) => { data[data.indexOf(d)] = nd; render(); changed(); return ""; }, names(d));
+    const add = (pre) => dropEditor(pre, true, (nd) => { data.push(nd); render(); changed(); return ""; }, names());
+    const menu = (d) => [["Edit", () => edit(d)], ["Preview", () => dropPreview(d)], ["Duplicate", () => add({ ...d, name: d.name + " copy" })],
+      [d.disabled ? "Enable" : "Disable", () => { if (d.disabled) delete d.disabled; else d.disabled = true; render(); changed(); }], "-",
+      ["Delete", () => { data.splice(data.indexOf(d), 1); render(); changed(); }, "danger"]];
+    function render() {
+      const c = (d) => (counts && counts[d.name.toLowerCase()]) || null;
+      clear(box).append(h("div", { class: "toolbar nomargin" }, h("button", { type: "button", class: "btn", onclick: () => add() }, "＋ New drop rule")),
+        data.length ? h("div", { class: "scroll" }, h("table", { class: "shipcfg" },
+          h("thead", {}, h("tr", {}, ["Name", "Filter", "Severity", "Dropped", "Last", "On"].map((x) => h("th", { class: x === "Dropped" ? "num" : "" }, x)))),
+          h("tbody", {}, data.map((d) => h("tr", { class: d.disabled ? "off" : "", oncontextmenu: rowMenu(menu(d)), ondblclick: () => edit(d) },
+            h("td", {}, h("button", { type: "button", class: "qlink", onclick: () => edit(d) }, d.name)),
+            h("td", { class: "mono" }, shipFilterText(d) || "everything"),
+            h("td", {}, dropSevText(dropSevValue(d))),
+            h("td", { class: "num", title: "Since each node started" }, counts ? count((c(d) || {}).n || 0) : "–"),
+            h("td", { title: c(d) && c(d).last ? new Date(c(d).last).toLocaleString() : "" }, c(d) && c(d).last ? ago(c(d).last) : "–"),
+            h("td", {}, d.disabled ? "no" : "yes"))))))
+          : h("div", { class: "empty" }, "No drop rules: every message is kept."));
+    }
+    (async () => {
+      try {
+        const nodes = ((await api("GET", "/api/logs/status")).data || {}).nodes || [];
+        counts = {};
+        for (const n of nodes) for (const r of n.drop_rules || []) {
+          const k = r.name.toLowerCase(), x = counts[k] = counts[k] || { n: 0, last: 0 };
+          x.n += r.dropped || 0; x.last = Math.max(x.last, r.last || 0);
+        }
+        render();
+      } catch (_) { /* the counts stay "–" */ }
+    })();
+    render();
+    // sent here from the Logs page: a new rule with that filter
+    if (state.prefill.drop) { const p = state.prefill.drop; state.prefill.drop = null; setTimeout(() => add(p), 0); }
+    return { el: box, get: () => data };
+  }
+
   const makeConfigView = (only) => {
     let holder, status, collect = null, refreshSNMP = () => {}, refreshSyslog = () => {}, refreshDNSReg = () => {}, refreshLLDP = () => {};
     const tab = only;
@@ -3221,6 +3322,7 @@
       const senders = fieldset(SENDER_FIELDS, { senders: (set.logs || {}).senders });
       const logAlerts = fieldset(LOGALERT_FIELDS, { logalerts: (set.logs || {}).alerts });
       const ship = shippingForm((set.logs || {}).destinations);
+      const drops = dropForm((set.logs || {}).drop_rules);
       const cluster = fieldset(CLUSTER_FIELDS, cfg.cluster || {});
       const snmp = fieldset(SNMP_FIELDS, { snmp_communities: set.snmp_communities, snmp_acl: set.snmp_acl, snmp_contact: set.snmp_contact, location: (cfg.snmp || {}).location });
       const prom = fieldset(PROM_FIELDS, { metrics_acl: set.metrics_acl });
@@ -3248,11 +3350,11 @@
       const logsShared = () => {
         const snd = senders.get().senders || [], al = logAlerts.get().logalerts || [], v = logSet.get();
         const num = (x, def) => { x = Math.trunc(Number(x)); return Number.isFinite(x) && x !== def ? x : 0; };
-        const dst = ship.get();
-        const { senders: _s, alerts: _a, destinations: _ds, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
+        const dst = ship.get(), drp = drops.get();
+        const { senders: _s, alerts: _a, destinations: _ds, drop_rules: _dr, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
         const pct = Number(v.dir_max_percent) > 0 && Number(v.dir_max_percent) !== 90 ? Math.min(100, Math.floor(Number(v.dir_max_percent))) : 0;
         const mpct = Number(v.mem_max_percent) > 0 && Number(v.mem_max_percent) !== 70 ? Math.min(100, Math.floor(Number(v.mem_max_percent))) : 0;
-        const out = { ...rest, ...(snd.length ? { senders: snd } : {}), ...(al.length ? { alerts: al } : {}), ...(dst.length ? { destinations: dst } : {}), ...(num(v.retention_days, 0) > 0 ? { retention_days: num(v.retention_days, 0) } : {}),
+        const out = { ...rest, ...(snd.length ? { senders: snd } : {}), ...(al.length ? { alerts: al } : {}), ...(dst.length ? { destinations: dst } : {}), ...(drp.length ? { drop_rules: drp } : {}), ...(num(v.retention_days, 0) > 0 ? { retention_days: num(v.retention_days, 0) } : {}),
           ...(num(v.list_limit, 1000) ? { list_limit: Math.min(5000, Math.max(100, num(v.list_limit, 1000))) } : {}), ...(v.follow ? { follow: true } : {}), ...(pct ? { dir_max_percent: pct } : {}), ...(mpct ? { mem_max_percent: mpct } : {}), ...(num(v.udp_port, 514) ? { udp_port: num(v.udp_port, 514) } : {}), ...(num(v.tcp_port, 514) ? { tcp_port: num(v.tcp_port, 514) } : {}),
           ...(num(v.tls_port, 6514) ? { tls_port: num(v.tls_port, 6514) } : {}) };
         return Object.keys(out).length ? { logs: out } : {};
@@ -3487,7 +3589,8 @@
       const panels = [
         ["general", "Settings", settingsTabs()],
         ["groups", "Gateway groups", h("div", {}, groupsEl)],
-        ["senders", "Senders", h("div", {}, section("Senders", senders.el), section("Pattern alerts", logAlerts.el,
+        ["senders", "Senders", h("div", {}, section("Senders", senders.el), section("Drop rules", drops.el,
+          h("p", { class: "hint" }, "A message that matches an enabled rule is not kept: not stored, searched, counted, shipped or alerted on.")), section("Pattern alerts", logAlerts.el,
           h("p", { class: "hint" }, "Every minute each node counts the messages it received that match, in the minutes given. Reaching the count opens an alert; it closes when the count falls under. Words: and, or, not (or !word); the host takes * wildcards; severity is that severe or worse.")))],
         ["shipping", "Shipping", section("Destinations", ship.el)],
         ["web", "Web GUI", h("div", {}, section("Web GUI", web.el), certBox)],
@@ -4530,7 +4633,8 @@
       return el;
     };
     const RANGES = [["15m", "15 Min"], ["1h", "1 Hour"], ["6h", "6 Hours"], ["1d", "1 Day"], ["7d", "7 Days"], ["30d", "30 Days"], ["all", "All"]];
-    const SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["warning=", "Warning only"], ["notice", "Notice or worse"], ["info", "Info or worse"]];
+    const SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["warning=", "Warning only"], ["notice", "Notice or worse"], ["info", "Info or worse"],
+      ["warning-", "Warning or less severe"], ["notice-", "Notice or less severe"], ["info-", "Info and debug"], ["debug=", "Debug only"]];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
     const kept = { range: "15m", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25, field: "" };
@@ -4593,6 +4697,23 @@
       state.prefill.ship = { type: "syslog", ...f, ...shipSevFields(kept.severity) };
       selectTab("cfg_shipping");
     }
+    // a new drop rule: the page's filter and severity, or that message's program and its first words
+    function dropLikeThis(m) {
+      let f = shipFilterParse(filterText());
+      if (!Object.keys(f).length) {
+        f = {};
+        if (m.program) f.program = m.program;
+        const words = [];
+        for (const w of String(m.message || "").trim().split(/\s+/)) {
+          if (words.length >= 4 || !/^[A-Za-z][A-Za-z_-]*:?$/.test(w)) break;
+          words.push(w.replace(/:$/, "").toLowerCase());
+        }
+        if (words.length) f.query = words.join(" ");
+        if (!f.program && !f.query && m.host) f.host = m.host;
+      }
+      state.prefill.drop = { name: (f.program || f.host || "noise") + (f.query ? " " + f.query.split(" ")[0] : ""), ...f, ...dropSevFields(kept.severity) };
+      selectTab("cfg_senders");
+    }
     const sevCls = (n) => "sev sev-" + (SEVNAMES.indexOf(n) < 0 ? 6 : SEVNAMES.indexOf(n));
     const showTime = () => kept.range !== "15m" && kept.range !== "1h" && kept.range !== "6h";
 
@@ -4600,7 +4721,7 @@
       const own = [["Only this host", () => set({ host: m.host || "" })], ["Only this program", () => set({ program: m.program || "" })],
         ["This severity or worse", () => set({ severity: m.severity })], ["Only this sender", () => set({ source: m.source || "" })],
         ["Copy message", () => { try { navigator.clipboard.writeText(m.message); } catch (_) { /* no clipboard */ } }],
-        ["Ship messages like this…", () => shipLikeThis(m)]].filter((it) => !(it[0] === "Only this host" && !m.host) && !(it[0] === "Only this program" && !m.program));
+        ["Ship messages like this…", () => shipLikeThis(m)], ["Drop messages like this…", () => dropLikeThis(m)]].filter((it) => !(it[0] === "Only this host" && !m.host) && !(it[0] === "Only this program" && !m.program));
       return m.source ? [...own, "-", ...netToolMenu(m.source)] : own;
     }
     // the host column: what the sender is called (the first part of its DNS name, else its name in Configure ▸ Senders), the same name the Senders
@@ -4798,6 +4919,7 @@
         if (state.prefill.logsq != null) {   // sent here by Preview on Configure ▸ Shipping: what a destination sends
           const p = state.prefill.logsq; state.prefill.logsq = null;
           qIn.value = p.text; readFilter(); kept.severity = p.severity || ""; kept.page = 0;
+          if (p.range) kept.range = p.range;
         }
         qIn.value = filterText();
         rangeSel = h("select", { "aria-label": "Time range", onchange: () => { kept.range = rangeSel.value; kept.page = 0; load(); } }, RANGES.map(([id, text]) => h("option", { value: id }, text)));

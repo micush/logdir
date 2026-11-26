@@ -216,6 +216,16 @@ func runLogs(sock string, f *cliFlags) {
 		if n.MemCap > 0 {
 			fmt.Printf("    memory: %d hour(s) cached, %s of a cap of %s; searches found an hour cached %d time(s) and read it from disk %d time(s)\n", n.MemHours, humanBytes(n.MemBytes), humanBytes(n.MemCap), n.CacheHits, n.CacheMiss)
 		}
+		if len(n.DropRules) > 0 {
+			fmt.Printf("    drop rules: %d message(s) not kept since this node started\n", n.RuleDrop)
+			for _, d := range n.DropRules {
+				last := "never"
+				if d.Last > 0 {
+					last = "last " + time.UnixMilli(d.Last).Format("2006-01-02 15:04:05")
+				}
+				fmt.Printf("      %-24s %10d  %s\n", d.Name, d.Dropped, last)
+			}
+		}
 		if n.WriteErrs > 0 {
 			fmt.Printf("    %d WRITE ERROR(S)\n", n.WriteErrs)
 		}

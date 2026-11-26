@@ -98,6 +98,9 @@ type ldService struct {
 
 	nconn atomic.Int64
 	lastN atomic.Uint64
+
+	drops      atomic.Pointer[ldDropSet] // the drop rules as compiled (ld_drop.go)
+	dropCounts sync.Map                  // lower-case rule name -> *ldDropCounter
 }
 
 // ldSvc is this node's collector (nil in a test that has none).
@@ -161,7 +164,9 @@ func (s *ldService) Start() {
 	s.applyConfig()
 	s.store.Load()
 	go func() { s.store.Warm(); s.store.MakeSums(ctx); s.store.MakeWixes(ctx) }()
+	s.reconcileDrops() // before the first message is read
 	go s.loop(ctx, 3*time.Second, func() { s.reconcile(); s.syncSenders() })
+	go s.loop(ctx, 3*time.Second, s.reconcileDrops)
 	go s.loop(ctx, time.Second, s.store.Flush)
 	go s.loop(ctx, time.Minute, func() { s.applyConfig(); s.store.Maintain() })
 	go s.loop(ctx, time.Minute, s.resolveSenders)
@@ -510,6 +515,10 @@ func (s *ldService) handle(src, dst netip.Addr, via string, b []byte, now time.T
 	}
 	cfg := s.config()
 	m := parseSyslog(b, src, via, now, cfg.maxLine())
+	if s.dropRule(&m) != "" { // a drop rule: not kept, but the sender was heard
+		s.noteSender(src, dst, via, &m, len(b), now)
+		return
+	}
 	if s.keepRaw.Load() {
 		m.Raw = ldRawText(b, cfg.maxLine())
 	}
@@ -730,33 +739,35 @@ func (s *ldService) senderWords() map[string]string {
 
 // LdNodeStatus is the state of one node's collector.
 type LdNodeStatus struct {
-	Node       string   `json:"node"`
-	Enabled    bool     `json:"enabled"`
-	Listening  []string `json:"listening"`
-	Failed     []string `json:"failed,omitempty"`
-	Dir        string   `json:"dir,omitempty"`
-	DefaultDir string   `json:"default_dir,omitempty"`
-	DirError   string   `json:"dir_error,omitempty"`
-	DirBytes   uint64   `json:"dir_bytes,omitempty"`
-	DirCap     uint64   `json:"dir_cap_bytes,omitempty"`
-	MemBytes   uint64   `json:"mem_bytes,omitempty"`     // what the hour cache holds
-	MemCap     uint64   `json:"mem_cap_bytes,omitempty"` // the most it may hold
-	MemHours   int      `json:"mem_hours,omitempty"`     // hours in it
-	CacheHits  uint64   `json:"cache_hits,omitempty"`
-	CacheMiss  uint64   `json:"cache_misses,omitempty"`
-	CapRemoved uint64   `json:"removed_hours,omitempty"` // hours deleted by the retention or the cap
-	Received   uint64   `json:"received"`
-	Bytes      uint64   `json:"bytes"`
-	Refused    uint64   `json:"refused"`
-	Dropped    uint64   `json:"dropped"`
-	WriteErrs  uint64   `json:"write_errors,omitempty"`
-	UDP        uint64   `json:"udp"`
-	TCP        uint64   `json:"tcp"`
-	TLS        uint64   `json:"tls"`
-	Conns      int64    `json:"connections"`
-	Hours      int      `json:"hours"`
-	Stored     uint64   `json:"stored"`
-	Oldest     int64    `json:"oldest,omitempty"` // ms of the oldest message this node holds
+	Node       string        `json:"node"`
+	Enabled    bool          `json:"enabled"`
+	Listening  []string      `json:"listening"`
+	Failed     []string      `json:"failed,omitempty"`
+	Dir        string        `json:"dir,omitempty"`
+	DefaultDir string        `json:"default_dir,omitempty"`
+	DirError   string        `json:"dir_error,omitempty"`
+	DirBytes   uint64        `json:"dir_bytes,omitempty"`
+	DirCap     uint64        `json:"dir_cap_bytes,omitempty"`
+	MemBytes   uint64        `json:"mem_bytes,omitempty"`     // what the hour cache holds
+	MemCap     uint64        `json:"mem_cap_bytes,omitempty"` // the most it may hold
+	MemHours   int           `json:"mem_hours,omitempty"`     // hours in it
+	CacheHits  uint64        `json:"cache_hits,omitempty"`
+	CacheMiss  uint64        `json:"cache_misses,omitempty"`
+	CapRemoved uint64        `json:"removed_hours,omitempty"` // hours deleted by the retention or the cap
+	Received   uint64        `json:"received"`
+	Bytes      uint64        `json:"bytes"`
+	Refused    uint64        `json:"refused"`
+	Dropped    uint64        `json:"dropped"`
+	RuleDrop   uint64        `json:"rule_dropped"` // by the drop rules, since this node started
+	DropRules  []LdDropCount `json:"drop_rules,omitempty"`
+	WriteErrs  uint64        `json:"write_errors,omitempty"`
+	UDP        uint64        `json:"udp"`
+	TCP        uint64        `json:"tcp"`
+	TLS        uint64        `json:"tls"`
+	Conns      int64         `json:"connections"`
+	Hours      int           `json:"hours"`
+	Stored     uint64        `json:"stored"`
+	Oldest     int64         `json:"oldest,omitempty"` // ms of the oldest message this node holds
 }
 
 func (s *ldService) Status() LdNodeStatus {
@@ -786,5 +797,6 @@ func (s *ldService) Status() LdNodeStatus {
 		st.DefaultDir = filepath.Join(s.mg.stateDir, "logs")
 	}
 	st.Hours, st.Stored = s.store.Count()
+	st.RuleDrop, st.DropRules = ldStats.ruleDropped.Load(), s.dropCountsNow()
 	return st
 }

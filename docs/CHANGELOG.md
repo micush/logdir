@@ -1,5 +1,26 @@
 # Changelog
 
+## [v40] - 2026-11-26 — Logs: drop rules keep chosen messages out of the log
+
+### Added
+- **Drop rules (`ld_drop.go`).** Configure ▸ Senders has a **Drop rules** table: each rule has a name, a filter in the Logs page's language (words, phrases, `not`, `host=`, `program=`, `src=`, field terms such as `action=accept and dst_port=53`), an optional severity (that or worse, only that, or that or less severe) and an on/off switch. A message that matches an enabled rule is thrown away after it is parsed and before it is stored: it is not stored, searched, counted in the hour rollups, shipped or alerted on. Its sender is still marked heard, and the Senders table still counts every message it received. Rules are kept in `settings.logs.drop_rules` (at most 100, names unique; a rule with no filter and no severity is refused, since it would drop everything) and act on new messages only: what is already stored stays.
+- **Counts:** each node counts what each rule dropped since it started and when it last did; the table shows the total over the nodes (Dropped, Last). `/api/logs/status` has `rule_dropped` and `drop_rules` per node, `--status-socket … --logs` prints a *drop rules* block, and the MCP `logs_status` description mentions them.
+- **The popup** to add or edit a rule has **Preview**, which opens the Logs page with the rule's filter and severity over one day, to see what it would drop. The Logs page's right-click menu has **Drop messages like this…**, which opens the popup filled with the page's filter and severity, or with that message's program and its first words.
+- **Severity "or less severe":** the Logs page's severity menu has *Warning and less severe*, *Notice and less*, *Info and debug* and *Debug only*; the API takes `severity=info-` (`-` = that or less severe, `=` = only that), as do drop rules.
+- Help ▸ Configure ▸ Senders explains drop rules, and Help ▸ Logs the new menu items.
+
+### Changed
+- The shipping filter (`ld_ship.go`) and drop rules share one matcher: a selection keeps the parsed query and the sender names, and one lookup of the configured and DNS names serves every rule. Each collector goroutine uses its own copy of a rule's filter (from a pool), so matching takes no lock.
+- A cluster refuses a config with drop rules while any node is older than v40 (as v37 does for shipping), since an older node would keep everything.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- New tests (`ld_drop_test.go`): `TestDropValidate`; `TestDropRules` (16 messages over every kind of rule: words, a phrase, `not`, host, program, sender by configured name and by `src=` word, fields, each severity mode, a disabled rule; the counts; a sender whose every message is dropped is still heard; a sender heard for the first time is matched by its configured name at once, and the rules are compiled again when the number of senders changes; changing the config keeps the counts by name; no rules keeps everything); `TestDropConcurrent` (8 goroutines, `-race`); `TestDropNeedsNewNodes`; `TestSevLessSearch` (every severity in every mode, with and without words, two rounds so the kept hits are used too; a wrong hour mask makes it fail 60 checks).
+- Live, one daemon with a PAM login over HTTPS: 140 messages of 7 kinds kept with no rules. In headless Chromium (light and dark): right-click a keepalive ▸ *Drop messages like this…* filled the popup with the page's filter; Preview opened the Logs page with that filter over one day; three rules made in the popup (`keepalive`; `program=lldpd` with *Info and debug*, saved as the program field; `action=accept and dst_port=53`); a rule with only a name was refused in the popup. Then 140 more messages: the 60 expected were kept (neighbor Down, the warning from lldpd, the firewall's port 443), and `/api/logs/status`, the table and the CLI all showed 20, 40 and 20 dropped. `severity=info-` returned only info and debug messages.
+
+### Not verified
+- Not run on a cluster of several nodes. A sender's DNS name takes effect in rules only once they are compiled again (within 30 s, or when a new sender is heard); its configured name takes effect at once. In a search across nodes of mixed versions, older nodes ignore `sev_less` and return that severity or worse. Drop rules do not lower network traffic: the messages are still sent to logdir and parsed.
+
 ## [v39] - 2026-11-26 — Logs: a filter over 7 and 30 days is fast, and its refresh near instant
 
 ### Fixed

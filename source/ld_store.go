@@ -36,6 +36,7 @@ const (
 
 var ldStats struct {
 	received, bytes, parsed, refused, dropped, writeErrs atomic.Uint64
+	ruleDropped                                          atomic.Uint64 // by drop rules (ld_drop.go)
 	udp, tcp, tls                                        atomic.Uint64
 }
 
@@ -82,6 +83,7 @@ type ldFilter struct {
 	prog     string
 	minSev   int  // -1: any
 	sevExact bool // only this severity, not this severe or worse
+	sevLess  bool // this severity or less severe
 	src      string
 	srcWords map[string]string // each sender's names: a word of the search matches them too
 	buf      []byte            // scratch for the lower-cased text of the message being matched (a filter is used by one goroutine)
@@ -93,6 +95,19 @@ type ldFilter struct {
 	rawField bool              // some of raw are field values (which a few formats make up: ldFieldsMadeUp)
 	lower    []byte            // scratch: the lower-cased line
 	hkey     string            // key, once worked out (ld_hits.go)
+}
+
+// sevOK: does a message of this severity pass the filter's severity?
+func (f *ldFilter) sevOK(sev int) bool {
+	switch {
+	case f.minSev < 0:
+		return true
+	case f.sevExact:
+		return sev == f.minSev
+	case f.sevLess:
+		return sev >= f.minSev
+	}
+	return sev <= f.minSev
 }
 
 func (f *ldFilter) hostOK(h string) bool { return f.host == "" || ldGlob(f.host, strings.ToLower(h)) }
@@ -137,7 +152,7 @@ func appendLower(dst []byte, s string) []byte {
 }
 
 func (f *ldFilter) match(m *LdMsg) bool {
-	if f.minSev >= 0 && (int(m.Sev) > f.minSev || (f.sevExact && int(m.Sev) != f.minSev)) {
+	if !f.sevOK(int(m.Sev)) {
 		return false
 	}
 	if f.src != "" && m.Src != f.src {
@@ -224,8 +239,17 @@ func (f *ldFilter) hourOK(h *ldHourMeta) bool {
 	if h.Count == 0 {
 		return false
 	}
-	if f.minSev >= 0 && h.Sev&(uint8(1<<uint(f.minSev+1))-1) == 0 {
-		return false
+	if f.minSev >= 0 {
+		mask := uint8(1<<uint(f.minSev+1)) - 1 // this severe or worse
+		switch {
+		case f.sevExact:
+			mask = 1 << uint(f.minSev)
+		case f.sevLess:
+			mask = ^(uint8(1<<uint(f.minSev)) - 1)
+		}
+		if h.Sev&mask == 0 {
+			return false
+		}
 	}
 	if !h.Full && h.Hosts != nil {
 		if f.host != "" && !strings.Contains(f.host, "*") && len(f.hostSrc) == 0 {
@@ -457,7 +481,7 @@ func ldRawSev(line []byte) int {
 // rawOK says from a stored line's bytes whether it can match (false: skip it without parsing); a line it cannot read is parsed.
 func (f *ldFilter) rawOK(line []byte) bool {
 	if f.minSev >= 0 {
-		if sev := ldRawSev(line); sev >= 0 && (sev > f.minSev || (f.sevExact && sev != f.minSev)) {
+		if sev := ldRawSev(line); sev >= 0 && !f.sevOK(sev) {
 			return false
 		}
 	}
@@ -864,8 +888,10 @@ type LdQuery struct {
 	Prog   string `json:"prog,omitempty"`
 	MinSev int    `json:"min_severity"` // -1 any
 	// SevExact: only messages of exactly MinSev (the web page's Warnings tile), not that severity or worse.
-	SevExact bool   `json:"sev_exact,omitempty"`
-	Src      string `json:"src,omitempty"`
+	SevExact bool `json:"sev_exact,omitempty"`
+	// SevLess: MinSev or less severe (info and debug for info), not that severity or worse (drop rules, ld_drop.go).
+	SevLess bool   `json:"sev_less,omitempty"`
+	Src     string `json:"src,omitempty"`
 	// SrcName picks senders by name (the configured name, the reverse name or the host name; * wildcards) instead of by address: every node
 	// turns it into the addresses it knows (srcSet) when it runs the query.
 	SrcName string `json:"src_name,omitempty"`
@@ -899,6 +925,9 @@ func (q *LdQuery) Validate() error {
 	if q.MinSev < -1 || q.MinSev > 7 {
 		return errors.New("min_severity must be 0 to 7")
 	}
+	if q.SevExact && q.SevLess {
+		return errors.New("a severity is exact, or this or less severe, not both")
+	}
 	if q.To != 0 && q.To < q.From {
 		return errors.New("to is before from")
 	}
@@ -916,7 +945,7 @@ func (q *LdQuery) Validate() error {
 
 func (q *LdQuery) filter() *ldFilter {
 	expr := parseMatch(q.Q)
-	return &ldFilter{expr: expr, groups: ldCompile(expr), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet, hostSrc: q.hostSrc, srcWords: q.srcWords}
+	return &ldFilter{expr: expr, groups: ldCompile(expr), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, sevLess: q.SevLess, src: q.Src, srcSet: q.srcSet, hostSrc: q.hostSrc, srcWords: q.srcWords}
 }
 
 // LdAnswer is what one node found.

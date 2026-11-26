@@ -230,15 +230,8 @@ func (d *LogDestCfg) Validate() error {
 		return fmt.Errorf("destination %s: at most 200 senders", n)
 	}
 	for _, s := range d.Senders {
-		s = strings.TrimSpace(s)
-		if _, err := netip.ParsePrefix(s); err == nil {
-			continue
-		}
-		if _, err := netip.ParseAddr(s); err == nil {
-			continue
-		}
-		if !ldNameRE.MatchString(s) {
-			return fmt.Errorf("destination %s: sender %q is not a name, an address or a network", n, s)
+		if err := ldCheckSenderWord(s); err != nil {
+			return fmt.Errorf("destination %s: %v", n, err)
 		}
 	}
 	if _, err := ldShipStart(d.Start, time.Now()); err != nil {
@@ -249,6 +242,21 @@ func (d *LogDestCfg) Validate() error {
 	}
 	if d.RateLimit < 0 || d.RateLimit > 1000000 {
 		return fmt.Errorf("destination %s: rate_limit must be 0 to 1000000", n)
+	}
+	return nil
+}
+
+// ldCheckSenderWord accepts what a filter may name a sender by: a name (* wildcards), an address or a network.
+func ldCheckSenderWord(s string) error {
+	s = strings.TrimSpace(s)
+	if _, err := netip.ParsePrefix(s); err == nil {
+		return nil
+	}
+	if _, err := netip.ParseAddr(s); err == nil {
+		return nil
+	}
+	if !ldNameRE.MatchString(s) {
+		return fmt.Errorf("sender %q is not a name, an address or a network", s)
 	}
 	return nil
 }
@@ -982,8 +990,9 @@ func (w *ldShipWorker) noteErr(err error) {
 	w.mu.Unlock()
 }
 
-// filter is the destination's filter as this node runs it (sender names looked up again every half minute).
+// ldShipFilter is a destination's filter (or a drop rule's) as this node runs it (sender names looked up again every half minute).
 type ldShipFilter struct {
+	q      LdQuery // what f was made from (each goroutine that matches makes its own: a filter keeps scratch buffers)
 	f      *ldFilter
 	nets   []netip.Prefix
 	addrs  map[string]bool
@@ -998,36 +1007,76 @@ func (w *ldShipWorker) filter(prev *ldShipFilter) *ldShipFilter {
 		return prev
 	}
 	d := w.d
-	q := LdQuery{Q: d.Query, Host: d.Host, Prog: d.Program, MinSev: -1, SevExact: d.SevExact}
-	if d.MinSev != nil {
-		q.MinSev = *d.MinSev
+	return w.svc.selection(nil, d.Query, d.Host, d.Program, d.MinSev, d.SevExact, false, d.Senders)
+}
+
+// ldNames keeps the sender names looked up while several filters are compiled together (nil: none kept).
+type ldNames struct {
+	words  map[string]string
+	byName map[string]map[string]bool
+}
+
+func (s *ldService) wordsOf(nc *ldNames) map[string]string {
+	if nc == nil {
+		return s.senderWords()
 	}
-	s := w.svc
+	if nc.words == nil {
+		nc.words = s.senderWords()
+	}
+	return nc.words
+}
+
+func (s *ldService) byNameOf(nc *ldNames, pat string) map[string]bool {
+	if nc == nil {
+		return s.sendersByName(pat)
+	}
+	if nc.byName == nil {
+		nc.byName = map[string]map[string]bool{}
+	}
+	k := strings.ToLower(strings.TrimSpace(pat))
+	if m, ok := nc.byName[k]; ok {
+		return m
+	}
+	m := s.sendersByName(pat)
+	nc.byName[k] = m
+	return m
+}
+
+// selection compiles a filter of the Logs page with a list of senders (names are looked up now: this can take a moment).
+func (s *ldService) selection(nc *ldNames, query, host, prog string, minSev *int, sevExact, sevLess bool, senders []string) *ldShipFilter {
+	q := LdQuery{Q: query, Host: host, Prog: prog, MinSev: -1, SevExact: sevExact, SevLess: sevLess}
+	if minSev != nil {
+		q.MinSev = *minSev
+	}
 	if q.Q != "" {
-		q.srcWords = s.senderWords()
+		q.srcWords = s.wordsOf(nc)
 	}
 	if q.Host != "" {
-		q.hostSrc = s.sendersByName(q.Host)
+		q.hostSrc = s.byNameOf(nc, q.Host)
 	}
 	sf := &ldShipFilter{at: time.Now(), addrs: map[string]bool{}}
-	for _, x := range d.Senders {
+	for _, x := range senders {
 		x = strings.TrimSpace(x)
 		if p, err := netip.ParsePrefix(x); err == nil {
 			sf.nets = append(sf.nets, p.Masked())
 		} else if a, err := netip.ParseAddr(x); err == nil {
 			sf.addrs[a.Unmap().String()] = true
 		} else if x != "" {
-			for a := range s.sendersByName(x) {
+			for a := range s.byNameOf(nc, x) {
 				sf.addrs[a] = true
 			}
+			sf.names = append(sf.names, strings.ToLower(x))
 		}
 		sf.hasSrc = true
 	}
-	sf.f = q.filter()
+	sf.q, sf.f = q, q.filter()
 	return sf
 }
 
-func (sf *ldShipFilter) match(m *LdMsg) bool {
+func (sf *ldShipFilter) match(m *LdMsg) bool { return sf.matchWith(sf.f, m) }
+
+// matchWith is match with another copy of the filter (one per goroutine).
+func (sf *ldShipFilter) matchWith(f *ldFilter, m *LdMsg) bool {
 	if sf.hasSrc && !sf.addrs[m.Src] {
 		ok := false
 		if a, err := netip.ParseAddr(m.Src); err == nil {
@@ -1042,7 +1091,7 @@ func (sf *ldShipFilter) match(m *LdMsg) bool {
 			return false
 		}
 	}
-	return sf.f.match(m)
+	return f.match(m)
 }
 
 // run sends until stopped.

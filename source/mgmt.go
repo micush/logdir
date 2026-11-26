@@ -188,6 +188,9 @@ func (m *Mgmt) PutConfigBase(dc *DaemonConfig, actor, note, base string) error {
 		if err := logShippingNeedsNewNodes(cur, dc, m.cl.View().Peers); err != nil {
 			return err
 		}
+		if err := logDropNeedsNewNodes(cur, dc, m.cl.View().Peers); err != nil {
+			return err
+		}
 	}
 	if m.cl.Enabled() && m.cl.Snapshot().Role == RoleReplica && sharedOf(dc).hash() != sharedOf(cur).hash() {
 		payload := adminSharedConfig{Shared: sharedOf(dc), Seeds: seedsOf(dc), Base: base}

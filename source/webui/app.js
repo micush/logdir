@@ -238,6 +238,32 @@
     return data;
   }
 
+  // apiStream: a GET whose answer comes in parts (…&stream=1, application/x-ndjson: one JSON line per part, each the whole answer so far,
+  // the last with "done": true).  onPart(line) is called for each; a daemon that answers in one piece (an older node, a proxy that
+  // waits for the end) gives one call.  Errors as api(); signal drops it.
+  async function apiStream(path, signal, onPart) {
+    const res = await fetch(route(path + (path.includes("?") ? "&" : "?") + "stream=1"), { method: "GET", credentials: "same-origin", signal });
+    if (res.status === 401) { stopAllTimers(); state.session = null; showLogin(); throw new Error("unauthenticated"); }
+    if (!res.ok || !/ndjson/.test(res.headers.get("Content-Type") || "") || !res.body) {
+      let data = null;
+      try { data = await res.json(); } catch (_) { /* non-JSON error */ }
+      if (!res.ok) { const err = new Error((data && data.error) || res.statusText || "request failed"); err.status = res.status; err.data = data; throw err; }
+      if (data && data.ok && data.data) onPart({ ...data, done: true });
+      return;
+    }
+    const rd = res.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    const take = (line) => { if (line.trim()) onPart(JSON.parse(line)); };
+    for (;;) {
+      const { value, done } = await rd.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) { take(buf.slice(0, i)); buf = buf.slice(i + 1); }
+    }
+    take(buf + dec.decode());
+  }
+
   // Upload raw bytes (release archive); the CSRF token still applies.
   async function apiUpload(path, file) {
     const res = await fetch(route(path), {
@@ -4786,8 +4812,14 @@
         : h("div", { class: "empty" }, "No message matches in this range.");
       const nodeErr = (r.node_errors || []).length ? h("span", { class: "bad-text small", title: r.node_errors.map((e) => e.node + ": " + e.error).join("\n") }, " " + r.node_errors.length + " of " + r.nodes + " nodes did not answer") : null;
       const note = r.note && !nodeErr ? h("span", { class: "muted small", title: r.note }, "ⓘ") : null;
+      // nodes still out (the list or the counts), then how long each took
+      const pending = [...new Set([...(r.pending || []), ...((stats && stats.pending) || [])])];
+      const times = (r.node_ms || []).slice().sort((a, b) => b.ms - a.ms);
+      const nodeSt = pending.length
+        ? h("span", { class: "muted small", role: "status", title: "Still waiting for " + pending.join(", ") }, " " + ((r.nodes || 1) - pending.length) + " of " + (r.nodes || 1) + " nodes…")
+        : multi && times.length ? h("span", { class: "muted small", title: times.map((x) => x.node + ": " + count(x.ms) + " ms").join("\n") }, " " + r.nodes + " nodes") : null;
       const csv = () => [["Time (UTC)", "Severity", "Facility", "Host", "Program", "PID", "Message", "Sender", "Sender DNS name", "Via", "Node"], ...all.map((m) => [m.time, m.severity, m.facility, m.host || "", m.program || "", m.pid || "", m.message, m.source || "", m.source_name || "", m.via || "", m.node || ""])];
-      clear(msgBox).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(following ? "Messages (following)" : "Messages")), nodeErr, note, h("span", { class: "grow" }),
+      clear(msgBox).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(following ? "Messages (following)" : "Messages")), nodeErr, nodeSt, note, h("span", { class: "grow" }),
         h("span", { class: "qfiltbox" }, qIn), h("span", { class: "grow" }),
         h("span", { class: "muted small" }, (all.length ? count(from + 1) + "–" + count(from + list.length) + " of " : "") + count(all.length) + (r.truncated && !following ? " newest" : "")), pager, all.length ? sizeSel : null, all.length ? csvButton("Log messages", csv) : null), h("div", { class: "body flush" }, body)));
       if (typingNow) { qIn.focus(); try { qIn.setSelectionRange(at0, at1); } catch (_) { /* not a text box */ } }
@@ -4876,16 +4908,29 @@
       if (inflight) inflight.abort();
       const ctl = inflight = new AbortController();
       inflightKey = qs + "&" + sq;
+      // The list and the counts come in parts, one as each node answers (a far node's part a little later): each part is the whole
+      // answer so far and is drawn as it comes; the header says which nodes are still out.
       try {
-        const [rep, st, sn] = await Promise.all([api("GET", "/api/logs/search?" + qs, undefined, false, ctl.signal),
-          api("GET", "/api/logs/stats?" + sq, undefined, false, ctl.signal),
-          api("GET", "/api/logs/senders", undefined, false, ctl.signal)]);
+        await Promise.all([
+          apiStream("/api/logs/search?" + qs, ctl.signal, (rep) => {
+            if (my !== seq) return;
+            res = rep.data; msgs = res.messages || [];
+            if (rep.done && !!rep.follow !== following) { following = !!rep.follow; followAt = 0; }   // Configure ▸ Settings ▸ Log collector ▸ Follow new messages
+            setBad("");
+            drawMessages();
+          }),
+          apiStream("/api/logs/stats?" + sq, ctl.signal, (st) => {
+            if (my !== seq) return;
+            stats = st.data;
+            drawTiles(); drawChart(); drawTops(); drawMessages();   // the header's "waiting for" covers both answers
+          }),
+          api("GET", "/api/logs/senders", undefined, false, ctl.signal).then((sn) => {
+            if (my !== seq) return;
+            senders = (sn.data && sn.data.senders) || [];
+            if (stats) drawTiles();
+          })]);
         if (my !== seq) return;
-        res = rep.data; msgs = res.messages || []; stats = st.data; senders = (sn.data && sn.data.senders) || [];
-        if (!!rep.follow !== following) { following = !!rep.follow; followAt = 0; }   // Configure ▸ Settings ▸ Log collector ▸ Follow new messages
         lastAt = Date.now();
-        setBad("");
-        drawTiles(); drawChart(); drawMessages(); drawTops();
       } catch (e) {
         if (e.message === "unauthenticated" || e.name === "AbortError") return;
         setBad(e.message);

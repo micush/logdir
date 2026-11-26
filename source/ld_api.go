@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -141,8 +142,78 @@ func (w *WebServer) handleLogSearch(rw http.ResponseWriter, r *http.Request, s *
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), ldReportTimeout(q))
 	defer cancel()
-	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": ldSvc.Search(ctx, q), "follow": ldSvc.config().Follow})
+	follow := ldSvc.config().Follow
+	if r.URL.Query().Get("stream") == "1" {
+		streamParts(rw, follow, func(part func(any, bool)) {
+			ldSvc.SearchEach(ctx, q, func(res LdResult, done bool) { part(res, done) })
+		})
+		return
+	}
+	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": ldSvc.Search(ctx, q), "follow": follow})
 }
+
+// streamParts answers with one JSON line per part of a cluster-wide answer (application/x-ndjson): {"ok":true,"data":…,"done":…},
+// each line the whole answer so far, the last with "done":true.  Nodes that answer within a few milliseconds of each other go out as one
+// line, and a slow reader never holds up the nodes' answers: only the newest part is waiting to be written.
+func streamParts(rw http.ResponseWriter, follow any, run func(part func(v any, done bool))) {
+	h := rw.Header()
+	h.Set("Content-Type", "application/x-ndjson")
+	h.Set("Cache-Control", "no-store")
+	h.Set("X-Content-Type-Options", "nosniff")
+	rw.WriteHeader(http.StatusOK)
+	rc := http.NewResponseController(rw)
+	var mu sync.Mutex
+	var latest any
+	var latestDone, have bool
+	sig := make(chan struct{}, 1)
+	fin := make(chan struct{})
+	go func() {
+		defer close(fin)
+		run(func(v any, done bool) {
+			mu.Lock()
+			latest, latestDone, have = v, done, true
+			mu.Unlock()
+			select {
+			case sig <- struct{}{}:
+			default:
+			}
+		})
+	}()
+	enc := json.NewEncoder(rw)
+	write := func() (done bool) {
+		mu.Lock()
+		v, d, ok := latest, latestDone, have
+		have = false
+		mu.Unlock()
+		if !ok {
+			return false
+		}
+		line := map[string]any{"ok": true, "data": v, "done": d}
+		if follow != nil {
+			line["follow"] = follow
+		}
+		if enc.Encode(line) == nil {
+			rc.Flush()
+		}
+		return d
+	}
+	for {
+		select {
+		case <-sig:
+			time.Sleep(ldStreamGather)
+			if write() {
+				<-fin
+				return
+			}
+		case <-fin:
+			write()
+			return
+		}
+	}
+}
+
+// ldStreamGather: after a node answers, how long a streamed answer waits for others before it writes a line.
+const ldStreamGather = 20 * time.Millisecond
 
 func (w *WebServer) handleLogTail(rw http.ResponseWriter, r *http.Request, s *session) {
 	if !w.logGate(rw) {
@@ -212,6 +283,12 @@ func (w *WebServer) handleLogStats(rw http.ResponseWriter, r *http.Request, s *s
 	top, _ := strconv.Atoi(r.URL.Query().Get("top"))
 	ctx, cancel := context.WithTimeout(r.Context(), ldReportTimeout(q))
 	defer cancel()
+	if r.URL.Query().Get("stream") == "1" {
+		streamParts(rw, nil, func(part func(any, bool)) {
+			ldSvc.StatsEach(ctx, q, step, top, func(res LdStatsResult, done bool) { part(res, done) })
+		})
+		return
+	}
 	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": ldSvc.Stats(ctx, q, step, top)})
 }
 

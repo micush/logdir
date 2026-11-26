@@ -1,5 +1,23 @@
 # Changelog
 
+## [v41] - 2026-11-26 — Cluster: searches over far links in one round trip, and results shown as each node answers
+
+### Changed
+- **Connections between nodes are kept open (`clusterpin.go`).** Every call to another node opened a new TCP and TLS connection and closed it afterwards (keep-alive was off), so each search, count and refresh paid the handshakes on top of the question itself: on a link with 250 ms round trips, about 750 ms before the far node started reading. Now one transport per peer address, pinned fingerprint and own identity certificate keeps up to 8 idle connections for 90 s; every connection is still made by the pinned dial, so it is verified against the pinned certificate exactly as before, and a kept connection is never shared between fingerprints or identities. The peer server keeps an idle connection 2 minutes (was 30 s). A call sent on a kept connection that the peer has just closed is sent again once on a new one (`X-Idempotency-Key`, the request's nonce, so the peer acts on it at most once). The rest of a response the caller did not read is drained, so the connection can be used again. This covers every call between nodes, not only the logs.
+
+### Added
+- **The Logs page shows each node's answer as it arrives.** `/api/logs/search` and `/api/logs/stats` take `stream=1`: the answer is `application/x-ndjson`, one line per part (`{"ok":true,"data":…,"done":false}`), each the whole answer so far, merged and cut as before, and the last with `"done":true` is the same as the answer without `stream`. Nodes that answer within 20 ms of each other go out as one line, and a slow reader never holds up the nodes. The page draws every part: the counts, chart and busiest cards, and the list, where a far node's messages take their place by time. While nodes are out the Messages card says **1 of 2 nodes…** (hover: which). Answers without `stream`, the CLI and the MCP tools are unchanged.
+- **Time per node:** a search or count over more than one node has `node_ms` (how long each node took, as the node that asked saw it, the link included) and, in a part before the last, `pending`. Once all have answered the Messages card says **2 nodes**; hover it for the times.
+- Help ▸ Logs explains both.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- New tests: `TestPinnedClientKeepsConnection` (5 calls open one connection, plus the one that learns the certificate; another own identity opens its own; another fingerprint is refused; with keep-alive off it fails: 6 connections); `TestStreamedSearchParts` (two cluster nodes, one answering 400 ms late: the first part holds this node's messages and names the other as pending, well before 400 ms; the last part has both and no pending; `node_ms` shows which was slow; the plain search is the same; over HTTP the first line of `stream=1` arrives before the far node answers, and it does not without the flush; a node that is down is reported and the answer still ends).
+- Live, two nodes on this host with a proxy holding every packet 125 ms each way (250 ms round trip) in front of node B, 400 messages, the Logs page's two requests over one day: v40 about 520 ms each, v41 about 260 ms (`node_ms`: node A 0–2 ms, node B 256–260 ms). The proxy answers the TCP handshake itself, so on a real link v40 would pay one round trip more (about 770 ms) and v41 the same. With `stream=1` the first line (node A's 800 messages, B pending) came after 27 ms and the last (1000, the limit) after 285 ms. In headless Chromium (light and dark): the Messages card went from *1 of 2 nodes…* with 800 messages at about 80 ms to *2 nodes* with 1000 at about 320 ms, the hover showed each node's time, and a search typed while the far node was still out was dropped for the new one (403 messages: 200 on each node plus 3 sent during the test).
+
+### Not verified
+- Not run over a real WAN link or with more than two nodes. A page that is looking through another node (Node ▸ another node, via `/api/proxy`) gets the parts only if the proxy passes them on as they come; otherwise it gets the whole answer at the end, as before. Kept connections are closed by the peer after 2 minutes idle (30 s on a node older than v41), so the first search after a quiet spell still pays the handshakes.
+
 ## [v40] - 2026-11-26 — Logs: drop rules keep chosen messages out of the log
 
 ### Added

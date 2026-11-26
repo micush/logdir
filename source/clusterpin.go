@@ -170,16 +170,67 @@ func pinnedClient(addr, fp string, timeout time.Duration) *http.Client {
 }
 
 // pinnedClientAs is pinnedClient presenting our own identity certificate to the peer.
+//
+// Connections are kept open between calls (peerTransport): a new one costs a TCP and a TLS handshake, two round trips more per
+// call, which on a far link (250 ms) is half a second per search.  Every connection is still made by dialPinnedAs, so it is
+// verified against the pinned certificate; a kept connection is only reused for the same address, fingerprint and own identity.
 func pinnedClientAs(addr, fp string, timeout time.Duration, me *tls.Certificate) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DisableKeepAlives: true,
-			DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return dialPinnedAs(ctx, addr, fp, me)
-			},
-		},
+	return &http.Client{Timeout: timeout, Transport: peerTransport(addr, fp, me)}
+}
+
+const (
+	peerIdleConn   = 90 * time.Second // a kept connection unused this long is closed (the peer server closes after peerIdleServer)
+	peerIdleMax    = 8                // kept connections per peer address
+	peerTransMax   = 256              // transports kept; past it they are all let go (addresses and certificates that changed)
+	peerIdleServer = 2 * time.Minute  // this node, as a server, closes a peer connection unused this long
+)
+
+var peerTrans struct {
+	sync.Mutex
+	m map[string]*http.Transport
+}
+
+func peerTransport(addr, fp string, me *tls.Certificate) *http.Transport {
+	key := addr + "\x00" + fp + "\x00"
+	if me != nil && len(me.Certificate) > 0 {
+		sum := sha256.Sum256(me.Certificate[0])
+		key += hex.EncodeToString(sum[:])
 	}
+	peerTrans.Lock()
+	defer peerTrans.Unlock()
+	if t := peerTrans.m[key]; t != nil {
+		return t
+	}
+	if peerTrans.m == nil || len(peerTrans.m) >= peerTransMax {
+		for _, t := range peerTrans.m {
+			t.CloseIdleConnections()
+		}
+		peerTrans.m = map[string]*http.Transport{}
+	}
+	var mine *tls.Certificate
+	if me != nil {
+		c := *me
+		mine = &c
+	}
+	t := &http.Transport{
+		DialTLSContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dialPinnedAs(ctx, addr, fp, mine)
+		},
+		MaxIdleConnsPerHost: peerIdleMax,
+		IdleConnTimeout:     peerIdleConn,
+	}
+	peerTrans.m[key] = t
+	return t
+}
+
+// closePeerConns closes the kept connections (tests, and a node leaving its cluster).
+func closePeerConns() {
+	peerTrans.Lock()
+	defer peerTrans.Unlock()
+	for _, t := range peerTrans.m {
+		t.CloseIdleConnections()
+	}
+	peerTrans.m = nil
 }
 
 // peerURL is the URL for a request to a peer made with pinnedClient.

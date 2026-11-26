@@ -13,6 +13,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -85,5 +86,52 @@ func TestPinnedClientChecksFingerprint(t *testing.T) {
 	// A bad address never dials.
 	if _, err := dialPinned(context.Background(), "evil@127.0.0.1:1", fp); err == nil {
 		t.Fatal("invalid address dialled")
+	}
+}
+
+// A second call to the same peer goes over the connection the first one opened; another fingerprint, or another own
+// identity, never shares it.
+func TestPinnedClientKeepsConnection(t *testing.T) {
+	good, fp := testIdentity(t, peerServerName)
+	var conns atomic.Int32
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.WriteString(w, `{"ok":true}`)
+	}))
+	srv.TLS = &tls.Config{Certificates: []tls.Certificate{good}, ClientAuth: tls.RequestClientCert}
+	srv.Config.ConnState = func(_ net.Conn, st http.ConnState) {
+		if st == http.StateNew {
+			conns.Add(1)
+		}
+	}
+	srv.StartTLS()
+	t.Cleanup(srv.Close)
+	t.Cleanup(closePeerConns)
+	_, port, _ := net.SplitHostPort(srv.Listener.Addr().String())
+	addr := "127.0.0.1:" + port
+	get := func(me *tls.Certificate) {
+		t.Helper()
+		resp, err := pinnedClientAs(addr, fp, 5*time.Second, me).Get(peerURL("/x"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	me, _ := testIdentity(t, peerServerName)
+	for range 5 {
+		get(&me)
+	}
+	// one connection to learn the certificate, one for the calls
+	if n := conns.Load(); n != 2 {
+		t.Fatalf("5 calls opened %d connections, want 2 (1 to learn the certificate)", n)
+	}
+	other, _ := testIdentity(t, peerServerName)
+	get(&other)
+	if n := conns.Load(); n != 3 {
+		t.Fatalf("another own identity reused a connection: %d connections", n)
+	}
+	_, otherFp := testIdentity(t, peerServerName)
+	if _, err := pinnedClientAs(addr, otherFp, 5*time.Second, &me).Get(peerURL("/x")); err == nil {
+		t.Fatal("another fingerprint was served over the kept connection")
 	}
 }

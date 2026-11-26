@@ -256,7 +256,7 @@ func (c *Cluster) applyListener() {
 	c.registerLogRoutes(mux)
 	srv := &http.Server{
 		ErrorLog: log.New(io.Discard, "", 0), Handler: mux, ReadHeaderTimeout: 10 * time.Second, ReadTimeout: 30 * time.Second,
-		WriteTimeout: 4 * time.Minute, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16 << 10,
+		WriteTimeout: 4 * time.Minute, IdleTimeout: peerIdleServer, MaxHeaderBytes: 16 << 10,
 		// the client certificate is asked for but not chain-checked (there is no CA): peerAuth compares its
 		// fingerprint with the identity the signed request claims
 		TLSConfig: &tls.Config{Certificates: []tls.Certificate{cert}, MinVersion: tls.VersionTLS12, ClientAuth: tls.RequestClientCert},
@@ -584,6 +584,9 @@ func (c *Cluster) callAddr(ctx context.Context, addr string, peer ClusterPeer, m
 	req.Header.Set("X-Logdir-Peer", peerHdr)
 	req.Header.Set("X-Logdir-Ts", ts)
 	req.Header.Set("X-Logdir-Nonce", nonce)
+	// A kept connection the peer has just closed fails the call before the peer reads it; this header lets net/http send the
+	// same request once more on a new connection.  It is signed with a nonce, so the peer acts on it at most once either way.
+	req.Header.Set("X-Idempotency-Key", nonce)
 	bsum := sha256.Sum256(body)
 	bodyHash := hex.EncodeToString(bsum[:])
 	req.Header.Set("X-Logdir-Body", bodyHash)
@@ -596,7 +599,11 @@ func (c *Cluster) callAddr(ctx context.Context, addr string, peer ClusterPeer, m
 	if err != nil {
 		return err
 	}
-	defer resp.Body.Close()
+	defer func() {
+		// read what the caller left (a JSON decoder stops at the end of the value) so the connection can be kept
+		io.Copy(io.Discard, io.LimitReader(resp.Body, 256<<10))
+		resp.Body.Close()
+	}()
 	if hdr != nil {
 		for k, v := range resp.Header {
 			hdr[k] = v

@@ -34,6 +34,9 @@ type ldQueryReply struct {
 	ShipRes *LdShipResult  `json:"ship_result,omitempty"`
 }
 
+// ldPeerTestDelay makes this node answer other nodes' log questions late (tests only: a node far away).
+var ldPeerTestDelay time.Duration
+
 func (c *Cluster) registerLogRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /cluster/log/query", c.peerAuth(c.handleLogQuery))
 }
@@ -46,6 +49,9 @@ func (c *Cluster) handleLogQuery(rw http.ResponseWriter, r *http.Request, caller
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), ldRoundTimeout(m.Query.From, m.Query.To))
 	defer cancel()
+	if d := ldPeerTestDelay; d > 0 { // tests: a far node
+		time.Sleep(d)
+	}
 	rep, ok := ldSvc.local(ctx, m)
 	if !ok {
 		jsonError(rw, http.StatusBadRequest, "bad op or query")
@@ -139,34 +145,98 @@ func (s *ldService) otherPeers() []ClusterPeer {
 
 // fan asks every node (this one directly) and returns the answers.  An unreachable node is reported, not fatal.
 func (s *ldService) fan(ctx context.Context, m ldQueryMsg) (reps []ldQueryReply, errs []NodeError, nodes int) {
+	st := s.fanEach(ctx, m, nil)
+	return st.reps, st.errs, st.nodes
+}
+
+// NodeTime is how long a node took to answer, as the node that asked saw it (the link's round trips included).
+type NodeTime struct {
+	Node string `json:"node"`
+	Ms   int64  `json:"ms"`
+}
+
+// ldFanState is what has come back so far: the answers, the nodes that failed, the time each took, and the nodes still out.
+type ldFanState struct {
+	reps    []ldQueryReply
+	errs    []NodeError
+	times   []NodeTime
+	pending []string
+	nodes   int
+	done    bool
+}
+
+func (st ldFanState) copy() ldFanState {
+	st.reps = append([]ldQueryReply(nil), st.reps...)
+	st.errs = append([]NodeError(nil), st.errs...)
+	st.times = append([]NodeTime(nil), st.times...)
+	st.pending = append([]string(nil), st.pending...)
+	sort.Slice(st.errs, func(i, j int) bool { return st.errs[i].Node < st.errs[j].Node })
+	sort.Strings(st.pending)
+	return st
+}
+
+// fanName names this node in node_ms and pending: its cluster address, as the other nodes are named (its host name alone).
+func (s *ldService) fanName() string {
+	if a := s.selfAddr(); a != "" {
+		return a
+	}
+	return selfHost()
+}
+
+// fanEach asks every node at once, this one too, and calls part (when not nil) with a copy of what has come back each time a
+// node answers or fails, one call at a time; the last call has done set.  It returns the final state.
+func (s *ldService) fanEach(ctx context.Context, m ldQueryMsg, part func(ldFanState)) ldFanState {
 	peers := s.otherPeers()
+	self := s.fanName()
 	var mu sync.Mutex
 	var wg sync.WaitGroup
+	st := ldFanState{nodes: len(peers) + 1}
+	st.pending = append(st.pending, self)
+	for _, p := range peers {
+		st.pending = append(st.pending, p.Addr)
+	}
+	to := ldRoundTimeout(m.Query.From, m.Query.To)
+	got := func(node string, start time.Time, r *ldQueryReply, err error) {
+		mu.Lock()
+		defer mu.Unlock()
+		for i, n := range st.pending {
+			if n == node {
+				st.pending = append(st.pending[:i], st.pending[i+1:]...)
+				break
+			}
+		}
+		st.times = append(st.times, NodeTime{node, time.Since(start).Milliseconds()})
+		switch {
+		case err != nil:
+			st.errs = append(st.errs, NodeError{node, err.Error()})
+		case node == self && len(peers) > 0:
+			st.reps = append([]ldQueryReply{*r}, st.reps...) // this node first, as before
+		default:
+			st.reps = append(st.reps, *r)
+		}
+		st.done = len(st.pending) == 0
+		if part != nil {
+			part(st.copy())
+		}
+	}
+	start := time.Now()
 	for _, p := range peers {
 		wg.Add(1)
 		go func(p ClusterPeer) {
 			defer wg.Done()
-			to := ldRoundTimeout(m.Query.From, m.Query.To)
 			cctx, cancel := context.WithTimeout(ctx, to)
 			defer cancel()
 			var r ldQueryReply
 			err := s.mg.cl.call(cctx, p, "POST", "/cluster/log/query", m, &r, to)
-			mu.Lock()
-			defer mu.Unlock()
-			if err != nil {
-				errs = append(errs, NodeError{p.Addr, err.Error()})
-				return
-			}
-			reps = append(reps, r)
+			got(p.Addr, start, &r, err)
 		}(p)
 	}
-	lctx, cancel := context.WithTimeout(ctx, ldRoundTimeout(m.Query.From, m.Query.To))
+	lctx, cancel := context.WithTimeout(ctx, to)
 	lr, _ := s.local(lctx, m)
 	cancel()
+	got(self, start, &lr, nil)
 	wg.Wait()
-	reps = append([]ldQueryReply{lr}, reps...)
-	sort.Slice(errs, func(i, j int) bool { return errs[i].Node < errs[j].Node })
-	return reps, errs, len(peers) + 1
+	return st.copy()
 }
 
 // LdResult is the cluster-wide answer to a search.
@@ -181,6 +251,8 @@ type LdResult struct {
 	Partial    bool        `json:"partial,omitempty"`   // a node ran out of time
 	Duplicates int         `json:"duplicates_dropped,omitempty"`
 	Note       string      `json:"note,omitempty"`
+	Pending    []string    `json:"pending,omitempty"` // nodes not heard from yet: only in a streamed answer before its last part
+	NodeMs     []NodeTime  `json:"node_ms,omitempty"` // how long each node took (more than one node)
 }
 
 // LdView is a message as the API and the MCP tools show it.
@@ -260,17 +332,35 @@ func mergeLdAnswers(parts []LdAnswer, q LdQuery) (msgs []LdMsg, truncated, parti
 
 // Search is the cluster-wide search.
 func (s *ldService) Search(ctx context.Context, q LdQuery) LdResult {
+	return s.SearchEach(ctx, q, nil)
+}
+
+// SearchEach is Search, also calling part (when not nil) with the answer so far each time a node answers; the last call holds every
+// node.  Calls are made one at a time.
+func (s *ldService) SearchEach(ctx context.Context, q LdQuery, part func(LdResult, bool)) LdResult {
 	if q.To == 0 {
 		q.To = time.Now().UnixMilli()
 	}
-	reps, errs, n := s.fan(ctx, ldQueryMsg{Op: "search", Query: q})
+	var cb func(ldFanState)
+	if part != nil {
+		cb = func(st ldFanState) { part(s.searchResult(q, st), st.done) }
+	}
+	return s.searchResult(q, s.fanEach(ctx, ldQueryMsg{Op: "search", Query: q}, cb))
+}
+
+func (s *ldService) searchResult(q LdQuery, st ldFanState) LdResult {
 	var parts []LdAnswer
-	for _, r := range reps {
+	for _, r := range st.reps {
 		if r.Answer != nil {
 			parts = append(parts, *r.Answer)
 		}
 	}
-	return s.result(q, parts, errs, n)
+	res := s.result(q, parts, st.errs, st.nodes)
+	res.Pending = st.pending
+	if st.nodes > 1 {
+		res.NodeMs = st.times
+	}
+	return res
 }
 
 // Tail is the newest messages after q.From, cluster-wide.
@@ -335,6 +425,8 @@ type LdStatsResult struct {
 	Values     int                 `json:"values,omitempty"`          // how many different values it has (up to 5000 per node are counted)
 	Partial    bool                `json:"partial,omitempty"`
 	Note       string              `json:"note,omitempty"`
+	Pending    []string            `json:"pending,omitempty"` // as LdResult
+	NodeMs     []NodeTime          `json:"node_ms,omitempty"`
 }
 
 type LdCount struct {
@@ -366,11 +458,27 @@ func topCounts(m map[string]uint64, n int) []LdCount {
 
 // Stats counts what matches over the cluster; step 0 gives no series.
 func (s *ldService) Stats(ctx context.Context, q LdQuery, step int64, top int) LdStatsResult {
+	return s.StatsEach(ctx, q, step, top, nil)
+}
+
+// StatsEach is Stats, calling part with the counts so far as SearchEach does.
+func (s *ldService) StatsEach(ctx context.Context, q LdQuery, step int64, top int, part func(LdStatsResult, bool)) LdStatsResult {
 	if q.To == 0 {
 		q.To = time.Now().UnixMilli()
 	}
-	reps, errs, n := s.fan(ctx, ldQueryMsg{Op: "stats", Query: q, Step: step})
-	res := LdStatsResult{From: q.From, To: q.To, Nodes: n, NodeErrors: errs, BySeverity: map[string]uint64{}, Step: step}
+	var cb func(ldFanState)
+	if part != nil {
+		cb = func(st ldFanState) { part(statsResult(q, step, top, st), st.done) }
+	}
+	return statsResult(q, step, top, s.fanEach(ctx, ldQueryMsg{Op: "stats", Query: q, Step: step}, cb))
+}
+
+func statsResult(q LdQuery, step int64, top int, st ldFanState) LdStatsResult {
+	reps, errs, n := st.reps, st.errs, st.nodes
+	res := LdStatsResult{From: q.From, To: q.To, Nodes: n, NodeErrors: errs, BySeverity: map[string]uint64{}, Step: step, Pending: st.pending}
+	if n > 1 {
+		res.NodeMs = st.times
+	}
 	hosts, progs, series := map[string]uint64{}, map[string]uint64{}, map[int64]uint64{}
 	srcs, srcSer, sevSer := map[string]uint64{}, map[string]map[int64]uint64{}, [3]map[int64]uint64{{}, {}, {}}
 	vals := map[string]uint64{}

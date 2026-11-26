@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"reflect"
@@ -150,6 +151,47 @@ func TestRollupFull(t *testing.T) {
 	}
 }
 
+func TestRawSev(t *testing.T) {
+	for _, m := range []LdMsg{{Sev: 3, Msg: "x"}, {Sev: 0, Host: `a,"s":7`, Prog: `p,"s":6`, PID: `,"s":5`, Msg: `,"s":4`}, {Sev: 7, Msg: ""}} {
+		b, _ := json.Marshal(&m)
+		if got := ldRawSev(b); got != int(m.Sev) {
+			t.Errorf("%s: severity %d, want %d", b, got, m.Sev)
+		}
+	}
+	for _, line := range []string{`{"t":1}`, `{"t":1,"s":12}`, `{"t":1,"s":`, `{"t":1,"s":x}`} {
+		if got := ldRawSev([]byte(line)); got != -1 {
+			t.Errorf("%s: severity %d, want -1", line, got)
+		}
+	}
+}
+
+// A severity search reads lines it can rule out without parsing them: it must find what reading every message finds.
+func TestSeveritySearchSkipsLines(t *testing.T) {
+	s, now := rollupStore(t, t.TempDir(), 30, 300)
+	s.cache.set(0, 1) // nothing fits: every closed hour is read from its file
+	for _, q := range []LdQuery{{MinSev: 3}, {MinSev: 4, SevExact: true}, {MinSev: 0}, {MinSev: 6, Host: "fw1"}} {
+		q.From, q.Limit = now.Add(-26*time.Hour).UnixMilli(), 5000
+		got := s.Search(context.Background(), q)
+		var want []LdMsg
+		f := q.filter()
+		for h := q.From / 3600000; h <= now.Unix()/3600; h++ {
+			s.streamFile(h, func(m *LdMsg) bool {
+				if m.T >= q.From && f.match(m) {
+					want = append(want, *m)
+				}
+				return true
+			})
+		}
+		if len(want) == 0 || !reflect.DeepEqual(got.Msgs, want) {
+			t.Fatalf("%+v: %d messages, want %d", q, len(got.Msgs), len(want))
+		}
+		st := s.Stats(context.Background(), LdQuery{From: q.From, MinSev: q.MinSev, SevExact: q.SevExact, Host: q.Host, Q: "not zzzznever"}, 600)
+		if st.Total != uint64(len(want)) {
+			t.Fatalf("%+v: stats %d, want %d", q, st.Total, len(want))
+		}
+	}
+}
+
 func TestSeriesStep(t *testing.T) {
 	for _, c := range []struct {
 		span time.Duration
@@ -173,5 +215,58 @@ func BenchmarkStats30d(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		s.Stats(context.Background(), q, step)
+	}
+}
+
+// errStore: 30 days of 20000 messages an hour, errors rare (5 an hour), warnings 1%, and a 64 MB cache.
+func errStore(b *testing.B) (*ldStore, time.Time) {
+	now := ldNow
+	s := newLdStore(b.TempDir(), "n1")
+	s.now = func() time.Time { return now }
+	s.Load()
+	hours, per := 30*24, 20000
+	base := now.Add(-time.Duration(hours) * time.Hour)
+	for h := 0; h <= hours; h++ {
+		for i := 0; i < per; i++ {
+			at := base.Add(time.Duration(h)*time.Hour + time.Duration(i)*time.Hour/time.Duration(per))
+			if at.After(now) {
+				break
+			}
+			sev := int8(6)
+			if i%4000 == 7 {
+				sev = 3
+			} else if i%100 == 5 {
+				sev = 4
+			}
+			s.Add(LdMsg{T: at.UnixMilli(), Host: fmt.Sprintf("fw%d", i%4), Prog: "fortigate", Sev: sev, Fac: 1, Src: fmt.Sprintf("10.1.1.%d", i%4),
+				Msg: fmt.Sprintf(`date=2026-11-21 time=20:30:56 devname="fw%d" logid="00000000%02d" type="traffic" subtype="forward" level="notice" srcip=192.168.%d.%d srcport=%d dstip=151.101.%d.%d dstport=443 action="ip-conn" policyid=1 sessionid=%d`, i%4, i%50, i%200, i%250, 1024+i%60000, i%200, i%250, 17000000+i), Via: "udp"})
+		}
+	}
+	s.Flush()
+	s.Maintain()
+	s.cache.set(0, 64)
+	return s, now
+}
+
+// BenchmarkSearchSeverity30d is the Errors and Warnings tiles of the Logs page (the newest 1000) over 1, 7 and 30 days.
+func BenchmarkSearchSeverity30d(b *testing.B) {
+	if testing.Short() {
+		b.Skip("slow to set up")
+	}
+	s, now := errStore(b)
+	for _, c := range []struct {
+		name string
+		sev  int
+		ex   bool
+		span time.Duration
+	}{{"err1d", 3, false, 24 * time.Hour}, {"err7d", 3, false, 7 * 24 * time.Hour}, {"err30d", 3, false, 30 * 24 * time.Hour}, {"warn30d", 4, true, 30 * 24 * time.Hour}} {
+		b.Run(c.name, func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				a := s.Search(context.Background(), LdQuery{From: now.Add(-c.span).UnixMilli(), MinSev: c.sev, SevExact: c.ex, Limit: 1000})
+				if i == 0 {
+					b.Logf("%d msgs scanned %d", len(a.Msgs), a.Scanned)
+				}
+			}
+		})
 	}
 }

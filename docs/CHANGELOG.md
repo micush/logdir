@@ -1,5 +1,19 @@
 # Changelog
 
+## [v36] - 2026-11-26 — Logs: the Errors and Warnings tiles fast over 7 and 30 days
+
+### Fixed
+- **Clicking Errors or Warnings on the Logs page was slow past one day.** The message list (`/api/logs/search` with a severity) wants the newest 1000 matches; when errors are rare that means reading back through hundreds of hours, and every message of every one of them was decompressed and parsed as JSON just to look at its severity, then put in the hour cache (pushing the recent hours out). Now, for an hour that is not already in the cache, each stored line's severity is read straight from its bytes (`ldRawSev`) and only the lines that can match are parsed; such hours are not added to the cache. The same applies to the stats of the hours that are still read message by message. Hours in the cache are used as before. A line whose severity cannot be read that way is parsed, as before.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64.
+- New tests: `TestRawSev` (the severity is read right even when the host, program or PID contain `,"s":`, and an unreadable line gives none), `TestSeveritySearchSkipsLines` (with nothing cached, searches and stats for error or worse, warning only, emergency, and a severity with a host give exactly what reading every message gives).
+- `BenchmarkSearchSeverity30d` (30 days of 20,000 messages an hour, 5 errors an hour, 1% warnings, a 64 MB cache), the newest 1000 errors: 7 days 11.4 s → 1.19 s, 30 days 14.0 s → 1.42 s; warnings only 30 days about 0.04 s in both.
+- Live, one daemon with a PAM login over HTTPS on 30 days of data: v35 and v36 return the same 1000 messages for error or worse and for warning only, over 7 and 30 days.
+
+### Not verified
+- Not run on a cluster of several nodes. What remains of the time over 30 days is decompressing the hours; a search with words still reads every hour.
+
 ## [v35] - 2026-11-26 — Logs over 7 and 30 days: counts and chart from hourly rollups
 
 ### Fixed

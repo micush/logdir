@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -371,7 +372,54 @@ func (s *ldStore) scanFile(h int64, f func(*LdMsg) bool) {
 }
 
 // streamFile reads an hour's file message by message; false when there is no file.
-func (s *ldStore) streamFile(h int64, f func(*LdMsg) bool) bool {
+func (s *ldStore) streamFile(h int64, f func(*LdMsg) bool) bool { return s.streamFileRaw(h, nil, f) }
+
+// ldRawSev is the severity of a stored line read straight from its bytes, without parsing it (-1: not found).  The fields are
+// written in LdMsg's order, so `,"s":` is first seen at the severity key: the fields before it hold no unescaped quote.
+func ldRawSev(line []byte) int {
+	i := bytes.Index(line, []byte(`,"s":`))
+	if i < 0 || i+5 >= len(line) {
+		return -1
+	}
+	c := line[i+5]
+	if c < '0' || c > '7' || (i+6 < len(line) && line[i+6] >= '0' && line[i+6] <= '9') {
+		return -1
+	}
+	return int(c - '0')
+}
+
+// rawOK says from a stored line's bytes whether it can match (false: skip it without parsing); a line it cannot read is parsed.
+func (f *ldFilter) rawOK(line []byte) bool {
+	if f.minSev < 0 {
+		return true
+	}
+	sev := ldRawSev(line)
+	return sev < 0 || (sev <= f.minSev && (!f.sevExact || sev == f.minSev))
+}
+
+// scanHour is scanFile for a search or a count: an hour that is not in the cache, when the filter can rule lines out from their
+// bytes (a severity: the Errors and Warnings tiles), is read straight from its file and only the lines that can match are parsed;
+// it is not put in the cache then, so a long range does not push the newest hours out.
+func (s *ldStore) scanHour(h int64, flt *ldFilter, f func(*LdMsg) bool) {
+	if flt.minSev < 0 {
+		s.scanFile(h, f)
+		return
+	}
+	if s.closedHour(h) {
+		if msgs, ok := s.cache.get(h); ok {
+			for i := range msgs {
+				if !f(&msgs[i]) {
+					return
+				}
+			}
+			return
+		}
+	}
+	s.streamFileRaw(h, flt.rawOK, f)
+}
+
+// streamFileRaw is streamFile with a test on each line's bytes first (nil: every line is parsed).
+func (s *ldStore) streamFileRaw(h int64, pre func([]byte) bool, f func(*LdMsg) bool) bool {
 	var r io.Reader
 	for _, gz := range []bool{false, true} {
 		fh, err := os.Open(s.path(h, gz))
@@ -395,7 +443,7 @@ func (s *ldStore) streamFile(h int64, f func(*LdMsg) bool) bool {
 	br := bufio.NewReaderSize(r, 1<<20)
 	for {
 		line, err := br.ReadBytes('\n')
-		if len(line) > 1 {
+		if len(line) > 1 && (pre == nil || pre(line)) {
 			var m LdMsg
 			if json.Unmarshal(line, &m) == nil && !f(&m) {
 				return true
@@ -723,7 +771,7 @@ func (s *ldStore) Search(ctx context.Context, q LdQuery) LdAnswer {
 			continue
 		}
 		var hm []LdMsg
-		s.scanFile(h, func(m *LdMsg) bool {
+		s.scanHour(h, f, func(m *LdMsg) bool {
 			a.Scanned++
 			if a.Scanned&0x3fff == 0 && ctx.Err() != nil {
 				a.Partial = true
@@ -891,7 +939,7 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 				continue
 			}
 		}
-		s.scanFile(h, func(m *LdMsg) bool {
+		s.scanHour(h, f, func(m *LdMsg) bool {
 			r.Scanned++
 			if r.Scanned&0x3fff == 0 && ctx.Err() != nil {
 				r.Partial = true

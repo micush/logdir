@@ -1,5 +1,26 @@
 # Changelog
 
+## [v35] - 2026-11-26 — Logs over 7 and 30 days: counts and chart from hourly rollups
+
+### Fixed
+- **Logs ▸ 7 Days was slow and 30 Days / All did not finish.** The counts, the busiest hosts and programs and the chart (`/api/logs/stats`, also the Senders page and the `logs_stats` MCP tool) read, decompressed and parsed every message of every hour in the range on every refresh, every 15 s. Thirty days do not fit in the hour cache, so each refresh read the disk again (and pushed the recent hours out of the cache, slowing the short ranges too) until the 90 s node timeout.
+
+### Added
+- **Hour rollups (`ld_rollup.go`).** Each closed hour gets a small `.jsonl.lz.sum` file beside it: how many messages it holds of each severity, host, program and sender. It is made when the hour is compressed; hours from before this release get theirs by a background pass after start (newest first, read straight from the file so the cache is not disturbed). Rollups are kept in memory once read. Stats take a whole closed hour from its rollup when no words are typed (severity, host, program and sender filters, wildcards and sender names all still work); the first, partial hour of the range and the open hour are read as before. A rollup is used only while its count equals the hour's count in the index; otherwise the hour is read and the rollup made again. An hour with more than 20,000 distinct rows is marked as having none and is read as before. Retention and the disk cap remove the rollup with its hour.
+
+### Changed
+- **The Logs chart's bar width over long ranges is a whole number of hours** (1, 2, 3, 4, 6, 8, 12 or 24, then whole days), so each bar is made of whole hours: 7 days is 3-hour bars (56), 30 days 12-hour bars (60). Ranges up to a day are unchanged. An explicit `step` that is not a whole number of hours still works, by reading the hours.
+- A search with words over 30 days still reads every hour (the rollups hold no text).
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64.
+- New tests (`ld_rollup_test.go`): stats from rollups equal stats from reading every message, for no filter, severity (or worse, and exact), host, host wildcard, program, sender, senders by name and host-by-sender-name, with no series, 1-hour and 3-hour buckets, a partial first hour and the open hour; a restarted store reads the rollup files; a stale rollup is not used and is made again; words turn rollups off; an hour with too many rows is marked and counted from its messages; the chart step for each range.
+- Benchmark, 30 days of 20,000 messages an hour (14.4 million) with a 64 MB cache: the 30-day stats took 35.4 s in v34 and 0.077 s now.
+- Live, one daemon with a real PAM login over HTTPS on 30 days of v34-format data (no rollups): v34 took 7.6 s for the first 30-day stats; v35 made the missing rollups in the background after start, gave the same totals, and answered 30 days in about 0.05 s after a restart. 1-day and 30-day searches unchanged.
+
+### Not verified
+- Not run on a cluster of several nodes (each node uses its own rollups; the merge is unchanged). The page itself was not opened in a browser (no front-end change).
+
 ## [v34] - 2026-11-24 — Updates page: Nodes table laid out evenly, Fetch from online ticked by default
 
 ### Changed

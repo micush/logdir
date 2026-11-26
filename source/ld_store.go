@@ -195,6 +195,9 @@ type ldStore struct {
 	meta    map[int64]*ldHourMeta // by hour (unix seconds / 3600)
 	ring    []LdMsg               // the newest, oldest first
 	cache   *ldCache              // closed hours, parsed, under a memory cap
+	sumMu   sync.Mutex
+	sums    map[int64]ldSumEntry // closed hours' rollups (ld_rollup.go), by hour
+	sumMake sync.Mutex
 	dirty   bool
 
 	capPct, retDays int
@@ -206,7 +209,7 @@ type ldStore struct {
 }
 
 func newLdStore(dir, node string) *ldStore {
-	return &ldStore{cache: newLdCache(), dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
+	return &ldStore{cache: newLdCache(), sums: map[int64]ldSumEntry{}, dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
 }
 
 func ldVolumeSize(dir string) (uint64, error) {
@@ -228,7 +231,7 @@ func (s *ldStore) path(h int64, gz bool) string {
 }
 
 func parseHourName(n string) (int64, bool) {
-	n = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(n, ".idx"), ".lz"), ".jsonl")
+	n = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(n, ".sum"), ".idx"), ".lz"), ".jsonl")
 	t, err := time.ParseInLocation("2006010215", n, time.UTC)
 	if err != nil || len(n) != 10 {
 		return 0, false
@@ -256,7 +259,7 @@ func (s *ldStore) Load() {
 	var hours []int64
 	seen := map[int64]bool{}
 	for _, e := range ents {
-		if h, ok := parseHourName(e.Name()); ok && !strings.HasSuffix(e.Name(), ".idx") && !seen[h] {
+		if h, ok := parseHourName(e.Name()); ok && !strings.HasSuffix(e.Name(), ".idx") && !strings.HasSuffix(e.Name(), ".sum") && !seen[h] {
 			seen[h] = true
 			hours = append(hours, h)
 		}
@@ -531,6 +534,12 @@ func (s *ldStore) compress(h int64) {
 	s.mu.Unlock()
 	if m != nil {
 		s.saveMeta(h, m)
+		s.mu.Lock()
+		n := m.Count
+		s.mu.Unlock()
+		if s.closedHour(h) {
+			s.hourSum(h, n) // the rollup, while the hour is fresh in the page cache
+		}
 	}
 }
 
@@ -596,6 +605,7 @@ func (s *ldStore) enforce() {
 		delete(s.meta, f.h)
 		s.mu.Unlock()
 		s.cache.drop(f.h)
+		s.dropSum(f.h)
 	}
 	for _, f := range list {
 		if f.h == curH {
@@ -828,6 +838,32 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 	}
 	s.mu.Unlock()
 	sort.Slice(hours, func(i, j int) bool { return hours[i] < hours[j] })
+	// count adds n messages like m, at bucket b
+	count := func(m *LdMsg, n uint64, b int64) {
+		r.Total += n
+		r.BySev[m.Sev&7] += n
+		if len(r.ByHost) < 5000 || r.ByHost[m.Host] > 0 {
+			r.ByHost[m.Host] += n
+		}
+		if m.Prog != "" && (len(r.ByProg) < 5000 || r.ByProg[m.Prog] > 0) {
+			r.ByProg[m.Prog] += n
+		}
+		if len(r.BySrc) < 5000 || r.BySrc[m.Src] > 0 {
+			r.BySrc[m.Src] += n
+		}
+		if step > 0 {
+			r.Series[b] += n
+			r.SevSer[ldSevClass(m.Sev)][b] += n
+			ss := r.SrcSer[m.Src]
+			if ss == nil && len(r.SrcSer) < ldSrcSeriesMax {
+				ss = map[int64]uint64{}
+				r.SrcSer[m.Src] = ss
+			}
+			if ss != nil {
+				ss[b] += n
+			}
+		}
+	}
 	for _, h := range hours {
 		if ctx.Err() != nil {
 			r.Partial = true
@@ -835,6 +871,25 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 		}
 		if !f.hourOK(meta[h]) {
 			continue
+		}
+		// a whole closed hour, and nothing asked that a rollup cannot answer: add up its rollup instead of reading it
+		if s.closedHour(h) && sumHourOK(f, step, h, q.From, to) {
+			if sum := s.hourSum(h, meta[h].Count); sum != nil {
+				var b int64
+				if step > 0 {
+					b = h * 3600 / step * step
+				}
+				var m LdMsg
+				for i := range sum.rows {
+					x := &sum.rows[i]
+					m.Host, m.Prog, m.Src, m.Sev = sum.names[x.host], sum.names[x.prog], sum.names[x.src], x.sev
+					if f.match(&m) {
+						count(&m, x.n, b)
+					}
+				}
+				r.Scanned += sum.count
+				continue
+			}
 		}
 		s.scanFile(h, func(m *LdMsg) bool {
 			r.Scanned++
@@ -845,30 +900,11 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			if m.T < q.From || m.T > to || !f.match(m) {
 				return true
 			}
-			r.Total++
-			r.BySev[m.Sev&7]++
-			if len(r.ByHost) < 5000 || r.ByHost[m.Host] > 0 {
-				r.ByHost[m.Host]++
-			}
-			if m.Prog != "" && (len(r.ByProg) < 5000 || r.ByProg[m.Prog] > 0) {
-				r.ByProg[m.Prog]++
-			}
-			if len(r.BySrc) < 5000 || r.BySrc[m.Src] > 0 {
-				r.BySrc[m.Src]++
-			}
+			var b int64
 			if step > 0 {
-				b := (m.T / 1000) / step * step
-				r.Series[b]++
-				r.SevSer[ldSevClass(m.Sev)][b]++
-				ss := r.SrcSer[m.Src]
-				if ss == nil && len(r.SrcSer) < ldSrcSeriesMax {
-					ss = map[int64]uint64{}
-					r.SrcSer[m.Src] = ss
-				}
-				if ss != nil {
-					ss[b]++
-				}
+				b = (m.T / 1000) / step * step
 			}
+			count(m, 1, b)
 			return true
 		})
 		if r.Partial {

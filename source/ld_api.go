@@ -195,11 +195,7 @@ func (w *WebServer) handleLogStats(rw http.ResponseWriter, r *http.Request, s *s
 		}
 		step = int64(d / time.Second)
 	} else if r.URL.Query().Get("series") == "1" {
-		step = (q.To - q.From) / 1000 / 60
-		if step < 60 {
-			step = 60
-		}
-		step = step / 60 * 60
+		step = ldSeriesStep(q.To - q.From)
 	}
 	if step > 0 && (q.To-q.From)/1000/step > 2000 {
 		jsonError(rw, http.StatusBadRequest, "step: too small for this range (at most 2000 points)")
@@ -209,6 +205,24 @@ func (w *WebServer) handleLogStats(rw http.ResponseWriter, r *http.Request, s *s
 	ctx, cancel := context.WithTimeout(r.Context(), ldReportTimeout(q))
 	defer cancel()
 	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": ldSvc.Stats(ctx, q, step, top)})
+}
+
+// ldSeriesStep is the bucket of the Logs chart over span milliseconds: about 60 bars, whole minutes; from 30 minutes up a whole number
+// of hours (1, 2, 3, 4, 6, 8, 12 or 24, then whole days), so each bar holds whole hours and the closed ones come from their rollups.
+func ldSeriesStep(span int64) int64 {
+	step := span / 1000 / 60
+	if step < 1800 {
+		if step < 60 {
+			step = 60
+		}
+		return step / 60 * 60
+	}
+	for _, hrs := range []int64{1, 2, 3, 4, 6, 8, 12, 24} {
+		if step <= hrs*3600 {
+			return hrs * 3600
+		}
+	}
+	return (step + 86399) / 86400 * 86400
 }
 
 func (w *WebServer) handleLogSenders(rw http.ResponseWriter, r *http.Request, s *session) {

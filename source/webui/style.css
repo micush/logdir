@@ -474,6 +474,7 @@ td input[type=date] { width: 11rem; }
 .seg { background: var(--surface); color: var(--text); border: 0; border-right: 1px solid var(--border); padding: .4rem .8rem; font: inherit; cursor: pointer; }
 .seg:last-child { border-right: 0; }
 .seg[aria-pressed="true"] { background: var(--info-bg); color: var(--info); font-weight: 600; }
+button.btn[aria-pressed="true"] { background: var(--info-bg); color: var(--info); border-color: var(--info); font-weight: 600; }   /* a toggle that is on (Over time) */
 .qcustom { display: inline-flex; gap: .4rem; align-items: center; flex-wrap: wrap; }
 .warnline { color: var(--warn); }
 /* the tiles share one row; a label may wrap to two lines in a narrow window, a number never does; below the widest word the row scrolls */

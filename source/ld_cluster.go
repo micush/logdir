@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/netip"
 	"sort"
@@ -423,6 +424,8 @@ type LdStatsResult struct {
 	Field      string              `json:"field,omitempty"`           // the field whose values TopValues counts
 	TopValues  []LdCount           `json:"top_values,omitempty"`      // its most frequent values among the matching messages
 	Values     int                 `json:"values,omitempty"`          // how many different values it has (up to 5000 per node are counted)
+	Measure    string              `json:"measure,omitempty"`         // what top_values also count: distinct:F or sum:F; they are ordered by it
+	ValSeries  map[string][]uint64 `json:"value_series,omitempty"`    // per value asked for (values=), its counts per bucket, one entry per point of Series
 	Partial    bool                `json:"partial,omitempty"`
 	Note       string              `json:"note,omitempty"`
 	Pending    []string            `json:"pending,omitempty"` // as LdResult
@@ -432,6 +435,11 @@ type LdStatsResult struct {
 type LdCount struct {
 	Name  string `json:"name"`
 	Count uint64 `json:"count"`
+	// with a measure (top_values only): how many different values of the measured field, or the sum of its numbers and how many
+	// messages had a number there
+	Distinct *uint64  `json:"distinct,omitempty"`
+	Sum      *float64 `json:"sum,omitempty"`
+	Numeric  uint64   `json:"numeric,omitempty"`
 }
 
 type LdPoint struct {
@@ -442,7 +450,7 @@ type LdPoint struct {
 func topCounts(m map[string]uint64, n int) []LdCount {
 	out := make([]LdCount, 0, len(m))
 	for k, v := range m {
-		out = append(out, LdCount{k, v})
+		out = append(out, LdCount{Name: k, Count: v})
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Count != out[j].Count {
@@ -482,9 +490,32 @@ func statsResult(q LdQuery, step int64, top int, st ldFanState) LdStatsResult {
 	hosts, progs, series := map[string]uint64{}, map[string]uint64{}, map[int64]uint64{}
 	srcs, srcSer, sevSer := map[string]uint64{}, map[string]map[int64]uint64{}, [3]map[int64]uint64{{}, {}, {}}
 	vals := map[string]uint64{}
+	aggs, valSer := map[string]*ldAgg{}, map[string]map[int64]uint64{}
+	unmeasured := 0
 	for _, r := range reps {
 		if r.Stats == nil {
 			continue
+		}
+		if q.Measure != "" && !r.Stats.Measured {
+			unmeasured++ // a node older than v42
+		}
+		for k, o := range r.Stats.FieldAgg {
+			a := aggs[k]
+			if a == nil {
+				a = &ldAgg{}
+				aggs[k] = a
+			}
+			if err := a.merge(o); err != nil {
+				res.Partial = true
+			}
+		}
+		for k, m := range r.Stats.ValSer {
+			if valSer[k] == nil {
+				valSer[k] = map[int64]uint64{}
+			}
+			for t, v := range m {
+				valSer[k][t] += v
+			}
 		}
 		res.Total += r.Stats.Total
 		res.Partial = res.Partial || r.Stats.Partial
@@ -529,7 +560,13 @@ func statsResult(q LdQuery, step int64, top int, st ldFanState) LdStatsResult {
 	}
 	res.TopHosts, res.TopProgs = topCounts(hosts, top), topCounts(progs, top)
 	if q.Field != "" {
-		res.Field, res.TopValues, res.Values = q.Field, topCounts(vals, top), len(vals)
+		res.Field, res.Values = q.Field, len(vals)
+		if q.Measure == "" {
+			res.TopValues = topCounts(vals, top)
+		} else {
+			res.Measure = q.Measure + ":" + q.MField
+			res.TopValues = topMeasured(vals, aggs, q.Measure, top)
+		}
 	}
 	if step > 0 {
 		var ts []int64
@@ -555,6 +592,16 @@ func statsResult(q LdQuery, step int64, top int, st ldFanState) LdStatsResult {
 			}
 			res.SevSeries[name] = col
 		}
+		if len(q.Values) > 0 {
+			res.ValSeries = map[string][]uint64{}
+			for _, v := range q.Values {
+				col := make([]uint64, len(ts))
+				for i, t := range ts {
+					col[i] = valSer[v][t]
+				}
+				res.ValSeries[v] = col
+			}
+		}
 		res.Heard = make([]uint64, len(ts))
 		for j, t := range ts {
 			for _, m := range srcSer {
@@ -566,10 +613,48 @@ func statsResult(q LdQuery, step int64, top int, st ldFanState) LdStatsResult {
 	}
 	if len(errs) > 0 {
 		res.Note = "some nodes did not answer: what they hold is missing from the counts"
+	} else if unmeasured > 0 {
+		res.Note = fmt.Sprintf("%d node(s) older than v42 counted messages only: their share of %s is missing", unmeasured, res.Measure)
 	} else if len(reps) > 1 {
 		res.Note = "a message a sender sent to two nodes is counted on both"
 	}
 	return res
+}
+
+// topMeasured is the n values with the most different values of the measured field (or the largest sums), with their message counts.
+func topMeasured(vals map[string]uint64, aggs map[string]*ldAgg, kind string, n int) []LdCount {
+	out := make([]LdCount, 0, len(vals))
+	key := map[string]float64{}
+	for k, c := range vals {
+		x := LdCount{Name: k, Count: c}
+		var d uint64
+		var sum float64
+		if a := aggs[k]; a != nil {
+			d, sum, x.Numeric = a.distinct(), a.Sum, a.Nums
+		}
+		if kind == "distinct" {
+			x.Distinct = &d
+			key[k] = float64(d)
+		} else {
+			x.Sum = &sum
+			key[k] = sum
+		}
+		out = append(out, x)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		a, b := key[out[i].Name], key[out[j].Name]
+		if a != b {
+			return a > b
+		}
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].Name < out[j].Name
+	})
+	if len(out) > n {
+		out = out[:n]
+	}
+	return out
 }
 
 func (s *ldService) AllSenders(ctx context.Context) ([]LdSenderInfo, []NodeError) {

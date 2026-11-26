@@ -4663,7 +4663,7 @@
       ["warning-", "Warning or less severe"], ["notice-", "Notice or less severe"], ["info-", "Info and debug"], ["debug=", "Debug only"]];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
-    const kept = { range: "15m", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25, field: "" };
+    const kept = { range: "15m", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25, field: "", measure: "", over: false };
     const opened = new Set();   // messages whose fields are shown (by time, sender and text)
     const SEVNAMES = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
     const count = (v) => (Number(v) || 0).toLocaleString();
@@ -4684,7 +4684,8 @@
       return (withDate ? d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " : "") + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds()) + "." + String(d.getMilliseconds()).padStart(3, "0");
     };
 
-    let tiles, chartBox, msgBox, hostBox, qIn, rangeSel, sevSel;
+    let tiles, chartBox, msgBox, hostBox, valBox, qIn, rangeSel, sevSel, savedSel, saveBtn;
+    let saved = [], valSer = null;   // the saved searches; the values card's lines over time ({ field, names, pts, cols })
     let lastAt = 0, seq = 0, inflight = null, inflightKey = "", senders = [], stats = null, res = null, msgs = [], following = false, followAt = 0, followBusy = false, lastW = 0;
 
     const params = (extra) => {
@@ -4713,8 +4714,63 @@
     }
     function set(next) {
       Object.assign(kept, next); kept.page = 0;
-      qIn.value = filterText(); sevSel.value = kept.severity;
+      qIn.value = filterText(); sevSel.value = kept.severity; rangeSel.value = kept.range;
+      drawSaved();
       load();
+    }
+    // ── saved searches (settings.logs.saved, shared): the menu opens one, Save… names what the page shows ──
+    const savedOf = () => ({ q: kept.q, range: kept.range, severity: kept.severity, host: kept.host, program: kept.program, source: kept.source,
+      field: kept.field, measure: kept.field ? kept.measure : "", over_time: !!(kept.field && kept.over) });
+    const sameAs = (x) => { const c = savedOf(); return Object.keys(c).every((k) => (x[k] || (k === "range" ? "1h" : k === "over_time" ? false : "")) === c[k]); };
+    function drawSaved() {
+      if (!savedSel) return;
+      const cur = saved.find(sameAs);
+      clear(savedSel).append(h("option", { value: "" }, saved.length ? "Saved searches" : "No saved searches"),
+        ...saved.slice().sort((a, b) => a.name.localeCompare(b.name)).map((x) => h("option", { value: x.name, title: savedText(x) }, x.name)));
+      savedSel.value = cur ? cur.name : "";
+      savedSel.disabled = !saved.length;
+      if (saveBtn) saveBtn.hidden = !!(state.session && state.session.read_only);
+    }
+    function savedText(x) {
+      const r = RANGES.find((y) => y[0] === (x.range || "1h")), sv = SEVS.find((y) => y[0] === (x.severity || ""));
+      const filt = [x.q, x.host && "host=" + x.host, x.program && "program=" + x.program, x.source && "source=" + x.source].filter(Boolean).join(" ");
+      return [filt || "every message", r ? r[1] : x.range, sv ? sv[1] : x.severity, x.field ? "values of " + x.field + (x.measure ? " (" + x.measure.replace(/^distinct:/, "different ").replace(/^sum:/, "sum of ") + ")" : "") + (x.over_time ? " over time" : "") : ""].filter(Boolean).join(" · ");
+    }
+    async function loadSaved() {
+      try { saved = (await api("GET", "/api/logs/saved")).saved || []; } catch (_) { saved = []; }
+      drawSaved();
+    }
+    function openSaved(x) {
+      set({ q: x.q || "", range: x.range || "1h", severity: x.severity || "", host: x.host || "", program: x.program || "", source: x.source || "",
+        field: x.field || "", measure: x.measure || "", over: !!x.over_time });
+    }
+    function saveDialog() {
+      const cur = saved.find(sameAs);
+      const name = h("input", { type: "text", value: cur ? cur.name : "", placeholder: "port scans", spellcheck: "false", autocomplete: "off", maxlength: "64" });
+      const what = h("p", { class: "muted small" }, savedText(savedOf()));
+      const hint = h("span", { class: "hint" });
+      const err = h("span", { class: "bad-text" });
+      const clash = () => saved.find((x) => x.name.toLowerCase() === name.value.trim().toLowerCase());
+      const upd = () => { const c = clash(); hint.textContent = c && c !== cur ? "Replaces the saved search " + c.name + "." : c ? "Saves it again with what the page shows now." : ""; };
+      name.oninput = upd; upd();
+      const call = async (body, close) => {
+        try { saved = (await api("PUT", "/api/logs/saved", body)).saved || []; drawSaved(); close(); }
+        catch (e) { if (e.message !== "unauthenticated") err.textContent = e.message; }
+      };
+      dialog(cur ? "Saved search " + cur.name : "Save this search", (close) => {
+        const form = h("form", { class: "shipform", onsubmit: (e) => {
+          e.preventDefault();
+          const n = name.value.trim();
+          if (!n || n.length > 64) { err.textContent = "Name: 1 to 64 characters."; return; }
+          call({ save: { name: n, ...savedOf() }, ...(cur && cur.name.toLowerCase() !== n.toLowerCase() ? { rename: cur.name } : {}) }, close);
+        } },
+        h("div", { class: "grid" }, h("label", { class: "f wide" }, "Name", name, hint)), what,
+        h("div", { class: "toolbar right" }, err, h("span", { class: "grow" }),
+          cur ? h("button", { type: "button", class: "btn danger", onclick: () => call({ delete: cur.name }, close) }, "Delete") : null,
+          h("button", { type: "submit", class: "btn primary" }, "Save"), h("button", { type: "button", class: "btn", onclick: close }, "Cancel")));
+        return [form];
+      });
+      name.focus();
     }
     // a new shipping destination with what the page is filtered on now, or, with no filter, this message's host and program (Configure ▸ Shipping)
     function shipLikeThis(m) {
@@ -4764,7 +4820,7 @@
     function addWord(w) { kept.q = (kept.q ? kept.q + " " : "") + w; set({}); }
     function fieldMenu(f) {
       return [["Only this value", () => addWord(fieldWord(f))], ["Not this value", () => addWord("not " + fieldWord(f))],
-        ["Top values of " + f.k, () => { kept.field = f.k; set({}); }], "-",
+        ["Top values of " + f.k, () => { kept.field = f.k; kept.measure = ""; set({}); }], "-",
         ["Copy value", () => { try { navigator.clipboard.writeText(f.v); } catch (_) { /* no clipboard */ } }]];
     }
     const msgKey = (m) => m.t + "|" + (m.source || "") + "|" + m.message;
@@ -4890,19 +4946,96 @@
     }
     function drawTops() {
       clear(hostBox).append(topCard("Busiest hosts", "host", stats && stats.top_hosts, (n) => set({ host: n })), topCard("Busiest programs", "program", stats && stats.top_programs, (n) => set({ program: n })));
-      if (kept.field && stats) {
-        const card = topCard("Values of " + kept.field, kept.field, stats.top_values, (v) => addWord(fieldWord({ k: kept.field, v })),
-          { col: "Value", head: [tc("Values of") + " ", h("span", { class: "mono" }, kept.field)] });
-        const bar = card.querySelector("header");
-        bar.append(h("button", { type: "button", class: "btn small", title: "Close", "aria-label": "Close the values of " + kept.field, onclick: () => { kept.field = ""; set({}); } }, "×"));
-        if (stats.values > (stats.top_values || []).length) bar.querySelector("h2").append(h("span", { class: "muted small" }, " " + count(stats.values) + " different"));
-        hostBox.append(card);
+      if (kept.field && stats) hostBox.append(valuesCard());
+    }
+    // the fields the menus offer: those of the messages listed, and host, program, sender, severity; numeric: those whose values are numbers
+    function knownFields() {
+      const all = new Map();
+      for (const m of msgs) for (const f of m.fields || []) {
+        const num = f.v !== "" && Number.isFinite(Number(f.v));
+        all.set(f.k, (all.get(f.k) ?? true) && num);
       }
+      for (const k of ["host", "program", "sender", "severity"]) if (!all.has(k)) all.set(k, false);
+      return all;
+    }
+    const fmtNum = (v) => (Number(v) || 0).toLocaleString(undefined, { maximumFractionDigits: 2 });
+    // The values card: for each value of the field, its messages, and what the Count menu adds (how many different values of another
+    // field, or the sum of its numbers); Over time draws the top five.
+    function valuesCard() {
+      const f = kept.field, rows = stats.top_values || [], total = stats.total || 0;
+      const [kind, mf] = (() => { const m = stats.measure || ""; const i = m.indexOf(":"); return i < 0 ? ["", ""] : [m.slice(0, i), m.slice(i + 1)]; })();
+      const fields = knownFields();
+      const msel = h("select", { "aria-label": "Count per value", title: "What to count for each value", onchange: () => { kept.measure = msel.value; set({}); } },
+        h("option", { value: "" }, "Messages"),
+        [...fields.keys()].filter((k) => k !== f).sort().map((k) => h("option", { value: "distinct:" + k }, "Different " + k)),
+        [...fields].filter(([k, num]) => num && k !== f).map(([k]) => k).sort().map((k) => h("option", { value: "sum:" + k }, "Sum of " + k)));
+      if (kept.measure && ![...msel.options].some((o) => o.value === kept.measure)) msel.append(h("option", { value: kept.measure }, (kept.measure.startsWith("sum:") ? "Sum of " : "Different ") + kept.measure.replace(/^[a-z]+:/, "")));
+      msel.value = kept.measure;
+      const over = h("button", { type: "button", class: "btn small", "aria-pressed": String(kept.over), title: "Draw the five top values over time", onclick: () => { kept.over = !kept.over; set({}); } }, "Over time");
+      const close = h("button", { type: "button", class: "btn small", title: "Close", "aria-label": "Close the values of " + f, onclick: () => { kept.field = ""; kept.measure = ""; kept.over = false; set({}); } }, "×");
+      const mcol = kind === "distinct" ? "Different " + mf : kind === "sum" ? "Sum of " + mf : "";
+      const mcell = (x) => {
+        if (kind === "distinct") {
+          const d = x.distinct || 0;
+          return h("td", { class: "num", title: d > 128 ? "Estimated: about 1.6% either way" : null }, (d > 128 ? "≈ " : "") + count(d));
+        }
+        return h("td", { class: "num", title: x.numeric < x.count ? count(x.numeric) + " of " + count(x.count) + " messages have a number in " + mf : null }, fmtNum(x.sum));
+      };
+      const body = rows.length
+        ? h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Value"), h("th", { class: "num" }, "Messages"), mcol ? h("th", { class: "num" }, mcol) : null, h("th", { class: "num" }, "Share"))),
+          h("tbody", {}, rows.map((x) => h("tr", {}, h("td", {}, h("button", { type: "button", class: "qlink", title: "Only this " + f, onclick: () => addWord(fieldWord({ k: f, v: x.name })) }, x.name)),
+            h("td", { class: "num" }, count(x.count)), mcol ? mcell(x) : null, h("td", { class: "num" }, total ? (x.count * 100 / total).toFixed(1) + "%" : "–"))))))
+        : h("div", { class: "empty" }, "No message in this range has " + f + ".");
+      const csv = () => [[f, "Messages", ...(mcol ? [mcol] : [])], ...rows.map((x) => [x.name, x.count, ...(mcol ? [kind === "distinct" ? x.distinct || 0 : x.sum || 0] : [])])];
+      const head = h("h2", {}, tc("Values of") + " ", h("span", { class: "mono" }, f));
+      if (stats.values > rows.length) head.append(h("span", { class: "muted small" }, " " + count(stats.values) + " different"));
+      return h("div", { class: "card" }, h("header", { class: "bar" }, head, h("span", { class: "grow" }), msel, over, rows.length ? csvButton("Values of " + f, csv) : null, close), h("div", { class: "body flush" }, body));
+    }
+    // the five top values over time: one line each
+    function drawValues() {
+      clear(valBox);
+      if (!kept.field || !kept.over || !valSer || valSer.field !== kept.field) return;
+      const { names, pts, cols } = valSer, n = pts.length;
+      let body;
+      if (!n || !names.length) body = h("div", { class: "empty" }, "No values to draw.");
+      else {
+        const max = niceMax(Math.max(1, ...names.flatMap((v) => cols[v] || [])));
+        const W = Math.max(480, Math.round((valBox.clientWidth || 794) - 34)), H = 220, L = axisMargin([0, 1, 2, 3, 4].map((g) => count(Math.round((max * g) / 4))), 44), R = 12, T = 12, B = 28, pw = W - L - R, ph = H - T - B;
+        const x = (i) => L + (n < 2 ? pw / 2 : (pw * i) / (n - 1)), y = (v) => T + ph - (ph * Math.min(v, max)) / max;
+        const svg = sv("svg", { class: "qchart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": "Values of " + kept.field + " over time" });
+        for (let g = 0; g <= 4; g++) {
+          const v = (max * g) / 4;
+          svg.append(sv("line", { class: "qgrid", x1: L, x2: W - R, y1: y(v), y2: y(v) }), sv("text", { class: "qax", x: L - 6, y: y(v) + 4, "text-anchor": "end" }, count(Math.round(v))));
+        }
+        const long = pts[n - 1].t - pts[0].t > 20 * 3600;
+        names.forEach((v, j) => {
+          const col = cols[v] || [], cls = "t" + (j + 1);
+          svg.append(sv("path", { class: "qline " + cls, d: col.map((c, i) => (i ? "L" : "M") + x(i).toFixed(1) + " " + y(c).toFixed(1)).join(" ") }));
+          col.forEach((c, i) => { if (c > 0) svg.append(sv("circle", { class: "qpt " + cls, cx: x(i).toFixed(1), cy: y(c).toFixed(1), r: n > 120 ? 1.5 : 2.5 }, sv("title", {}, v + "\n" + new Date(pts[i].t * 1000).toLocaleString() + "\n" + count(c) + " message" + (c === 1 ? "" : "s")))); });
+        });
+        const ticks = n < 2 ? [0] : [...new Set([0, 1, 2, 3, 4, 5].map((k) => Math.round((k * (n - 1)) / 5)))];
+        for (const i of ticks) svg.append(sv("text", { class: "qax", x: x(i), y: H - 8, "text-anchor": i === 0 ? "start" : i === n - 1 ? "end" : "middle" }, stamp(pts[i].t, long)));
+        const legend = h("div", { class: "qlegend" }, names.map((v, j) => h("span", { class: "qchip t" + (j + 1) }, h("span", { class: "sw" }), v)));
+        body = h("div", {}, legend, svg);
+      }
+      const csv = () => [["Time (UTC)", ...names], ...pts.map((p, i) => [csvIso(p.t), ...names.map((v) => (cols[v] || [])[i] || 0)])];
+      valBox.append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc("Values of") + " ", h("span", { class: "mono" }, kept.field), " over time"), h("span", { class: "grow" }),
+        n ? csvButton("Values of " + kept.field + " over time", csv) : null), h("div", { class: "body" }, body)));
+    }
+    async function loadValues(my, signal) {
+      if (!kept.field || !kept.over || !stats || stats.field !== kept.field) { valSer = null; drawValues(); return; }
+      const names = (stats.top_values || []).slice(0, 5).map((x) => x.name);
+      const p = params({ series: "1", field: kept.field });
+      for (const v of names) p.append("values", v);
+      const r = await api("GET", "/api/logs/stats?" + p.toString(), undefined, false, signal);
+      if (my !== seq) return;
+      valSer = { field: kept.field, names, pts: r.data.series || [], cols: r.data.value_series || {} };
+      drawValues();
     }
     // load: the messages, the counts and the senders.  A new load drops the one still running (typing a filter starts one at every
     // pause; over 30 days each can take seconds, and the daemon stops reading when its request is dropped).
     async function load() {
-      const qs = params({ fields: "1" }).toString(), sq = params({ series: "1", top: "10", ...(kept.field ? { field: kept.field } : {}) }).toString();
+      const qs = params({ fields: "1" }).toString(), sq = params({ series: "1", top: "10", ...(kept.field ? { field: kept.field } : {}), ...(kept.field && kept.measure ? { measure: kept.measure } : {}) }).toString();
       if (inflight && inflightKey === qs + "&" + sq) return;   // the same again (Enter after the pause already started it): let it finish
       const my = ++seq;
       if (inflight) inflight.abort();
@@ -4930,6 +5063,8 @@
             if (stats) drawTiles();
           })]);
         if (my !== seq) return;
+        await loadValues(my, ctl.signal);
+        if (my !== seq) return;
         lastAt = Date.now();
       } catch (e) {
         if (e.message === "unauthenticated" || e.name === "AbortError") return;
@@ -4952,7 +5087,7 @@
       } catch (e) { if (e.message !== "unauthenticated") setBad(e.message); } finally { followBusy = false; }
     }
     function setBad(msg) { qIn.classList.toggle("qbad", !!msg); qIn.title = msg || ""; qIn.setAttribute("aria-invalid", msg ? "true" : "false"); }
-    function apply() { readFilter(); kept.page = 0; load(); }
+    function apply() { readFilter(); kept.page = 0; drawSaved(); load(); }
 
     return {
       mount(main) {
@@ -4967,16 +5102,20 @@
           if (p.range) kept.range = p.range;
         }
         qIn.value = filterText();
-        rangeSel = h("select", { "aria-label": "Time range", onchange: () => { kept.range = rangeSel.value; kept.page = 0; load(); } }, RANGES.map(([id, text]) => h("option", { value: id }, text)));
+        rangeSel = h("select", { "aria-label": "Time range", onchange: () => { kept.range = rangeSel.value; kept.page = 0; drawSaved(); load(); } }, RANGES.map(([id, text]) => h("option", { value: id }, text)));
         rangeSel.value = kept.range;
-        sevSel = h("select", { "aria-label": "Severity", onchange: () => { kept.severity = sevSel.value; kept.page = 0; load(); } }, SEVS.map(([id, text]) => h("option", { value: id }, text)));
+        sevSel = h("select", { "aria-label": "Severity", onchange: () => { kept.severity = sevSel.value; kept.page = 0; drawSaved(); load(); } }, SEVS.map(([id, text]) => h("option", { value: id }, text)));
         sevSel.value = kept.severity;
-        tiles = h("div", { class: "qtiles" }); chartBox = h("div", {}); msgBox = h("div", {}); hostBox = h("div", { class: "logtops" });
+        savedSel = h("select", { "aria-label": "Saved searches", onchange: () => { const x = saved.find((y) => y.name === savedSel.value); if (x) openSaved(x); } });
+        saveBtn = h("button", { type: "button", class: "btn", title: "Save what the page shows, under a name every user sees", onclick: saveDialog }, "Save…");
+        tiles = h("div", { class: "qtiles" }); chartBox = h("div", {}); msgBox = h("div", {}); hostBox = h("div", { class: "logtops" }); valBox = h("div", {});
         if (window.ResizeObserver) { let tm = 0; new ResizeObserver(() => { clearTimeout(tm); tm = setTimeout(() => { if (stats && Math.abs(chartBox.clientWidth - lastW) > 24) drawChart(); }, 150); }).observe(chartBox); }
-        const bar = h("div", { class: "toolbar qbar qlogbar" }, rangeSel, sevSel);
-        main.append(bar, tiles, h("div", { class: "hosttables flowwide" }, chartBox, msgBox, hostBox));
+        const bar = h("div", { class: "toolbar qbar qlogbar" }, rangeSel, sevSel, h("span", { class: "grow" }), savedSel, saveBtn);
+        main.append(bar, tiles, h("div", { class: "hosttables flowwide" }, chartBox, msgBox, hostBox, valBox));
+        drawSaved();
         drawMessages();   // so the filter box is there even when the first report fails
         load();
+        loadSaved();
       },
       async poll() {
         if (following) { if (Date.now() - followAt >= FOLLOW_MS) await followStep(); return; }

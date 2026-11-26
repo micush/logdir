@@ -903,8 +903,14 @@ type LdQuery struct {
 	srcWords map[string]string
 	Limit    int  `json:"limit"`
 	Oldest   bool `json:"oldest_first,omitempty"` // the oldest matches (default: the newest)
-	// Field: stats count the values of this field (ld_fields.go) of the matching messages, in ByField.
+	// Field: stats count the values of this field (ld_fields.go, or host, program, sender, severity) of the matching messages, in ByField.
 	Field string `json:"field,omitempty"`
+	// Measure and MField: per value of Field, stats also count the different values of MField ("distinct") or add up its numbers
+	// ("sum"), in FieldAgg (ld_agg.go).
+	Measure string `json:"measure,omitempty"`
+	MField  string `json:"measure_field,omitempty"`
+	// Values: with Field and a step, stats count these values of Field per bucket (ValSer): the values card's lines over time.
+	Values []string `json:"values,omitempty"`
 	// Fields: each message found is listed with its fields.
 	Fields bool `json:"fields,omitempty"`
 }
@@ -1143,8 +1149,13 @@ type LdStatsAnswer struct {
 	SrcSer  map[string]map[int64]uint64 `json:"source_series,omitempty"`   // per sender (at most ldSrcSeriesMax of them), as Series
 	SevSer  [3]map[int64]uint64         `json:"severity_series,omitempty"` // info or less severe, warning, error or worse, as Series
 	ByField map[string]uint64           `json:"by_field,omitempty"`        // the values of q.Field -> count (at most ldFieldValuesMax of them)
-	Scanned uint64                      `json:"scanned"`
-	Partial bool                        `json:"partial,omitempty"`
+	// FieldAgg: per value of q.Field, what q.Measure counts (ld_agg.go); an empty map from a node that counted nothing, absent from
+	// one that does not know measures (older than v42)
+	FieldAgg map[string]*ldAgg           `json:"field_agg,omitempty"`
+	ValSer   map[string]map[int64]uint64 `json:"value_series,omitempty"` // per value of q.Values, as Series
+	Measured bool                        `json:"measured,omitempty"`     // q.Measure was counted (an empty FieldAgg is not sent)
+	Scanned  uint64                      `json:"scanned"`
+	Partial  bool                        `json:"partial,omitempty"`
 }
 
 // ldFieldValuesMax is how many different values of a field one node counts (the rest are not counted).
@@ -1167,8 +1178,18 @@ func ldSevClass(sev int8) int {
 func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswer {
 	f := q.filter()
 	r := LdStatsAnswer{Node: s.node, ByHost: map[string]uint64{}, ByProg: map[string]uint64{}, Step: step, Series: map[int64]uint64{}, BySrc: map[string]uint64{}}
+	var want map[string]bool
 	if q.Field != "" {
 		r.ByField = map[string]uint64{}
+		if q.Measure != "" {
+			r.FieldAgg, r.Measured = map[string]*ldAgg{}, true
+		}
+		if step > 0 && len(q.Values) > 0 {
+			r.ValSer, want = map[string]map[int64]uint64{}, map[string]bool{}
+			for _, v := range q.Values {
+				want[v] = true
+			}
+		}
 	}
 	if step > 0 {
 		r.SrcSer = map[string]map[int64]uint64{}
@@ -1209,10 +1230,24 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			r.BySrc[m.Src] += n
 		}
 		if q.Field != "" {
-			for _, kv := range ldFields(m) {
-				if kv.Key == q.Field && kv.Val != "" && (len(r.ByField) < ldFieldValuesMax || r.ByField[kv.Val] > 0) {
-					r.ByField[kv.Val] += n
-					break
+			fs := ldFields(m)
+			if v := ldFieldOf(m, fs, q.Field); v != "" && (len(r.ByField) < ldFieldValuesMax || r.ByField[v] > 0) {
+				r.ByField[v] += n
+				if r.FieldAgg != nil {
+					a := r.FieldAgg[v]
+					if a == nil {
+						a = &ldAgg{}
+						r.FieldAgg[v] = a
+					}
+					a.measure(q.Measure, q.MField, m, fs, n)
+				}
+				if want[v] {
+					vs := r.ValSer[v]
+					if vs == nil {
+						vs = map[int64]uint64{}
+						r.ValSer[v] = vs
+					}
+					vs[b] += n
 				}
 			}
 		}
@@ -1317,6 +1352,9 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 				s.hitsPut(f, h, true, &ldHits{count: meta[h].Count, sum: sum})
 			}
 		}
+	}
+	if r.FieldAgg != nil {
+		ldAggTrim(r.FieldAgg, q.Measure)
 	}
 	return r
 }

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/netip"
@@ -64,6 +65,24 @@ func (s *ldService) parseLdQuery(v url.Values) (LdQuery, error) {
 	}
 	q.Limit, _ = strconv.Atoi(v.Get("limit"))
 	q.Field = strings.TrimSpace(v.Get("field"))
+	if m := v.Get("measure"); m != "" {
+		kind, mf, err := parseLdMeasure(m)
+		if err != nil {
+			return q, err
+		}
+		if kind != "" && q.Field == "" {
+			return q, errors.New("measure: counts per value of a field: give field too")
+		}
+		q.Measure, q.MField = kind, mf
+	}
+	for _, x := range v["values"] { // one value each (values=a&values=b): a value may hold a comma
+		if q.Field == "" {
+			return q, errors.New("values: values of a field: give field too")
+		}
+		if x != "" && len(q.Values) < ldValuesMax && len(x) <= 1024 {
+			q.Values = append(q.Values, x)
+		}
+	}
 	q.Fields = v.Get("fields") == "1" || v.Get("fields") == "true"
 	q.Oldest = v.Get("oldest_first") == "1" || v.Get("oldest_first") == "true"
 	now := time.Now()
@@ -211,6 +230,9 @@ func streamParts(rw http.ResponseWriter, follow any, run func(part func(v any, d
 		}
 	}
 }
+
+// ldValuesMax is how many values of a field one count draws over time (values=).
+const ldValuesMax = 10
 
 // ldStreamGather: after a node answers, how long a streamed answer waits for others before it writes a line.
 const ldStreamGather = 20 * time.Millisecond
@@ -412,9 +434,14 @@ func logQS(c *mcpCtx, extra map[string]string) string {
 			v.Set(p.name, s)
 		}
 	}
-	for _, k := range []string{"step", "top", "after", "field"} {
+	for _, k := range []string{"step", "top", "after", "field", "measure"} {
 		if s := c.str(k); s != "" {
 			v.Set(k, s)
+		}
+	}
+	for _, x := range strings.Split(c.str("values"), ",") {
+		if x = strings.TrimSpace(x); x != "" {
+			v.Add("values", x)
 		}
 	}
 	for k, x := range extra {
@@ -458,7 +485,9 @@ func logMCPTools() []mcpTool {
 			props: append([]mcpProp{
 				{name: "step", typ: "string", desc: "Width of a point in the series: 1m, 5m, 1h ... Absent: no series."},
 				{name: "top", typ: "integer", desc: "How many hosts and programs (and values of field), default 20."},
-				{name: "field", typ: "string", desc: "Also count the values of this field among the matching messages (top_values): dst_port, action, src_ip, rule … Reads every matching message, so a long range takes longer."},
+				{name: "field", typ: "string", desc: "Also count the values of this field among the matching messages (top_values): dst_port, action, src_ip, rule, or host, program, sender, severity … Reads every matching message, so a long range takes longer."},
+				{name: "measure", typ: "string", desc: "With field: per value, also count distinct:FIELD (how many different values of another field, e.g. distinct:dst_port per src_ip: a port scan; exact up to 128, about 1.6% off past that) or sum:FIELD (add up its numbers, e.g. sum:bytes). top_values are then ordered by it."},
+				{name: "values", typ: "string", desc: "With field and step: these values of the field (comma-separated, up to 10) counted per bucket, in value_series."},
 			}, logSearchProps[:8]...),
 			run: func(c *mcpCtx) (any, error) {
 				b, err := c.get("/api/logs/stats?" + logQS(c, nil))

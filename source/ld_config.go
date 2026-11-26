@@ -47,6 +47,8 @@ type LogsConfig struct {
 	// Alerts are the pattern alerts: when a search matches at least Count messages in the last WindowMin minutes (on all nodes
 	// together), an alert opens; it closes when the count falls under.
 	Alerts []LogAlertCfg `json:"alerts,omitempty"`
+	// Saved are the Logs page's saved searches (ld_saved.go), shared by every user.
+	Saved []LogSavedCfg `json:"saved,omitempty"`
 	// Destinations are where each node sends on what it received (Configure ▸ Shipping, ld_ship.go).
 	Destinations []LogDestCfg `json:"destinations,omitempty"`
 	// DropRules: messages that match one are not kept (ld_drop.go).
@@ -79,6 +81,7 @@ func (c *LogsConfig) clone() *LogsConfig {
 	d := *c
 	d.Senders = append([]LogSenderCfg(nil), c.Senders...)
 	d.Alerts = append([]LogAlertCfg(nil), c.Alerts...)
+	d.Saved = append([]LogSavedCfg(nil), c.Saved...)
 	d.Destinations = cloneDests(c.Destinations)
 	d.DropRules = cloneDrops(c.DropRules)
 	return &d
@@ -193,6 +196,9 @@ func (c *LogsConfig) Validate() error {
 		}
 	}
 	if err := validateDropRules(c.DropRules); err != nil {
+		return err
+	}
+	if err := validateSaved(c.Saved); err != nil {
 		return err
 	}
 	return validateDestinations(c.Destinations)

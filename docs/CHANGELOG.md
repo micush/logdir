@@ -1,5 +1,27 @@
 # Changelog
 
+## [v42] - 2026-11-26 — Logs: saved searches, values over time, and count, different and sum per value
+
+### Added
+- **Saved searches (`ld_saved.go`).** The Logs page's toolbar has a **Saved searches** menu and **Save…**. A saved search keeps the filter, range, severity, host, program and sender, and the Values card's field, Count choice and Over time; picking it puts all of them back. They are shared by everyone on the cluster, kept in `settings.logs.saved` (at most 200, names unique ignoring case, each with who saved it and when). The Save popup names it, saves it again under the same name (replacing it), renames it, or deletes it. The menu shows the saved search that matches the page, and goes blank after a change. `GET /api/logs/saved` lists them; `PUT /api/logs/saved` takes `{save:{…}, rename, delete}`, reads the live config and retries if another change lands in between. Read-only users see and use them but cannot save (no Save…, and the API refuses).
+- **Count per value.** The Values card has a **Count** menu: *Messages* (as before), *Different X* (how many different values of another field each value has, such as how many destination ports one source address reached) and *Sum of X* (for fields with numbers, such as bytes). The column shows the result and the card sorts by it. Up to 128 different values per row are counted exactly; above that it is an estimate (HyperLogLog, about 1.6% either way), shown as **≈** with a tooltip. Each node sends its counts or sketches and the node that asked merges them, so a value seen on two nodes is counted once. The API takes `measure=distinct:F` or `measure=sum:F` with `field`, and each value gets `distinct` or `sum`.
+- **Over time.** The Values card's **Over time** toggle draws its top 5 values as lines over the range (legend, CSV download). The API takes up to 10 `values=` with `field` and answers `value_series`.
+- `host`, `program`, `sender` and `severity` can be used as fields (Values card, Count menu, API), not only fields parsed from the message.
+- The MCP `logs_stats` tool takes `measure` and `values` (comma-separated).
+- Help ▸ Logs explains the Count menu, Over time and saved searches.
+
+### Changed
+- A toggle button that is on (Over time) is drawn highlighted in both themes.
+- A node older than v42 answers a Count of *Different* or *Sum* with message counts only; its share is left out and the page's note says how many nodes that was.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- New tests: `TestLdAggSketch` (estimate within 5% from 129 to 200,000 values, encode and decode, merging sketches is the union, exact sets merge exactly, bad encodings refused, measure parsing); `TestStatsMeasure` (two stores: a scanner reaching ports 1–3000 on one and 2001–5000 on the other gives about 5000, another source exactly 2; value series; sum of bytes by host 1007 and 350.5 with numeric counts; an older node is noted); `TestStatsMeasureParams`; `TestSavedSearches`; `TestSavedSearchesWeb` (save, a bad severity is 422, an empty body 400, the config keeps who and when, list, delete, no CSRF token is 403).
+- Live, two nodes with 250 ms round trips between them (as in v41): a scanner reaching ports 1–1000 on node A and 501–1500 on node B showed **≈ 1,499** different ports (true: 1,500); sums of bytes and the 61 points of the value series matched the messages sent. In headless Chromium (light and dark): the Count menu, the ≈ tooltip, Over time with 5 lines and a legend, Save, the menu after a reload putting back the filter, range, Count and chart, rename and delete; no page errors.
+
+### Not verified
+- Not run over a real WAN or with more than two nodes. A field count reads the messages of each hour one after the other (no rollups), so *Different* and *Sum* over 7 or 30 days on a busy log are slow. Each node sends sets or sketches for at most its 200 values with the most different values; a value that is past that on every node is shown with its message count but a low *Different*. A message received by two nodes is counted on both, as before.
+
 ## [v41] - 2026-11-26 — Cluster: searches over far links in one round trip, and results shown as each node answers
 
 ### Changed

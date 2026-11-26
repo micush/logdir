@@ -1,5 +1,30 @@
 # Changelog
 
+## [v43] - 2026-11-26 — Logs at 400 devices: a fast 1-day view, a node that stays within its memory, faster Values
+
+A load test (400 devices: 40 firewalls, 60 routers, 300 switches; 500 messages a second, 43.2 million a day, 2.4 GB on disk) found three problems in v42: over 1 day the counts and chart read every message and stopped at 30 s with part of the total; a node started with a full day grew past its memory limit and was killed; and the Values card counted about 365,000 messages a second, so a day did not finish. Receiving was not a problem: up to 40,000 messages a second from 400 senders were all stored.
+
+### Changed
+- **1 day is drawn in bars of an hour** (24 bars, was 60 of 24 minutes). From a span of 12 hours up, bars are whole hours, so closed hours come from their rollups instead of being read. `ldSeriesStep`: 12 h and 1 d give 3600 s; 6 h still 6 minutes.
+- **The hour being written has a rollup kept as messages arrive** (`ld_rollup.go`: `liveAdd`, `liveSnapshot`), so the counts and chart up to now do not read it either. It is used only when it counts every message of the hour (not after a restart during the hour: that hour is read as before) and the range runs to now; filters with words still read the hour.
+- **Memory limit: the daemon's own cgroup.** The limit was read only from `/sys/fs/cgroup/memory.max` (or v1 `memory/memory.limit_in_bytes`), which is the root's, so a limit on the service (systemd `MemoryMax=`) or a group above it was missed; the test node saw 8 GB with 6 GB allowed. Now it follows `/proc/self/cgroup` and takes the smallest limit of its group, the groups above it and the root (v2 and v1). Monitor ▸ Node's memory figure uses the same.
+- **The hour cache defaults to 50 % of memory (was 70 %), and Go's memory limit is 20 points above it (was 5), at most 92 %.** With the cache full, 5 points left the garbage collector running all the time and every search crawled. An hour read into the cache is sized from the index (it grew by doubling, up to twice what it held), and its size is counted with what was allocated. An hour the cache would not keep is read line by line, not parsed whole and let go. Help ▸ Configure ▸ Senders states the defaults (memory 50, disk 90; it said 90 and 70).
+- **Counting over many hours reads several at once** (as many as a search: about half the cores, at most 8), each with its own part of the answer, added up at the end; those reads do not fill the cache, so a long range does not push the newest hours out.
+- **The values of a field are kept per closed hour** (`ld_hits.go`: `fieldPut`, under a tenth of the cache's cap, at least 64 MB, oldest hours out first), unsealed, so they add up exactly as reading would. The page's refresh reads only the current hour, and **Over time** takes its lines from the counts the card's count kept. A part that measured *Different* or *Sum* also serves the plain count; one that did not is made again when a measure is asked.
+- Reading a message's fields no longer builds a map per message (a look along the list instead) or a byte set per key.
+- Help ▸ Logs: the Values card's long ranges.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- New tests: `TestLiveSum` (the newest hour's counts from its rollup equal reading it, with severity, host and words; with the hour's file moved away the counts are still there and words find nothing; after a restart during the hour it is read); `TestStatsParallel` (one hour at a time and several at once give the same answer for counts, series, values, exact and estimated *Different*, and sums, with and without words; kept parts give the same answer as reading, with the closed hours' files moved away, for bars of 1 and 2 hours and none; Over time from a measured count's parts equals reading; a count-only part does not answer *Different*); `TestCgroupOwnGroup` (a service's limit, a slice's, the smaller wins, unlimited levels skipped, v1 under the memory controller); `TestSeriesStep`, `TestGoMemLimit` and the cache test updated for the new defaults.
+- Load test, same day of data, 2-core sandbox limited to 6 GB, default settings:
+  - v42: killed 30 s after start (6.3 GB); with the cache at 50 %, 1-day counts and chart 30 s and partial (11 of 43 million), filters 20–33 s every time, Values over 1 hour 2 s, over 6 hours and 1 day partial at 10 and 30 s.
+  - v43: cache cap 3.2 GB (50 % of the 6 GB limit), 3.3 GB resident after warming in 15 s, steady. 1-day counts and chart 0.8 s, complete (7 days 0.4 s). Filters over a day 11–17 s the first time, 0.7–3 s after. Values (*Different dst_port* by source) over a day: the first two loads stop at 30 s (the hours they finish are kept), then 2–3 s; over 6 hours 9 s; Over time 2.5 s. A day of field counting runs at about 0.8–1 million messages a second on these 2 cores (v42: 0.37 million).
+  - Receiving at 10,000 and 40,000 messages a second for 30 s each: all stored, nothing dropped by logdir or the kernel.
+
+### Not verified
+- Not run on more than 2 cores, where the Values card should be faster in proportion, or with more than one node. The Values card's first load over a day still stops at the 30 s limit on a node this small; the next load carries on from the hours kept. The first 1-day view after a restart reads the partial hour at each end (about 1 s here). Field summaries made when an hour is compressed (so even the first load is fast) are not done.
+
 ## [v42] - 2026-11-26 — Logs: saved searches, values over time, and count, different and sum per value
 
 ### Added

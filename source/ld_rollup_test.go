@@ -196,7 +196,7 @@ func TestSeriesStep(t *testing.T) {
 	for _, c := range []struct {
 		span time.Duration
 		want int64
-	}{{15 * time.Minute, 60}, {time.Hour, 60}, {6 * time.Hour, 360}, {24 * time.Hour, 1440}, {7 * 24 * time.Hour, 10800}, {30 * 24 * time.Hour, 43200}, {365 * 24 * time.Hour, 7 * 86400}} {
+	}{{15 * time.Minute, 60}, {time.Hour, 60}, {6 * time.Hour, 360}, {12 * time.Hour, 3600}, {11 * time.Hour, 660}, {24 * time.Hour, 3600}, {7 * 24 * time.Hour, 10800}, {30 * 24 * time.Hour, 43200}, {365 * 24 * time.Hour, 7 * 86400}} {
 		if got := ldSeriesStep(c.span.Milliseconds()); got != c.want {
 			t.Errorf("%v: step %d, want %d", c.span, got, c.want)
 		}

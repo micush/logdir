@@ -314,11 +314,12 @@ func (w *WebServer) handleLogStats(rw http.ResponseWriter, r *http.Request, s *s
 	writeJSON(rw, http.StatusOK, map[string]any{"ok": true, "data": ldSvc.Stats(ctx, q, step, top)})
 }
 
-// ldSeriesStep is the bucket of the Logs chart over span milliseconds: about 60 bars, whole minutes; from 30 minutes up a whole number
-// of hours (1, 2, 3, 4, 6, 8, 12 or 24, then whole days), so each bar holds whole hours and the closed ones come from their rollups.
+// ldSeriesStep is the bucket of the Logs chart over span milliseconds: about 60 bars, whole minutes; from 12 minutes up (a span of
+// 12 hours or more) a whole number of hours (1, 2, 3, 4, 6, 8, 12 or 24, then whole days), so each bar holds whole hours and the
+// closed ones come from their rollups: a day is 24 bars of an hour, not 60 of 24 minutes that would read every message.
 func ldSeriesStep(span int64) int64 {
 	step := span / 1000 / 60
-	if step < 1800 {
+	if step < 720 {
 		if step < 60 {
 			step = 60
 		}

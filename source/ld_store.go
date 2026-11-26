@@ -288,8 +288,16 @@ type ldStore struct {
 	hitMu    sync.Mutex // what filters with words found in closed hours (ld_hits.go)
 	hits     map[ldHitKey]*ldHits
 	hitBytes int
-	wixMake  sync.Mutex
-	dirty    bool
+	// the values of a field per closed hour (ld_hits.go: fieldPut), under hitMu
+	fparts     map[ldFieldPartKey]*ldFieldPart
+	fpartBytes int
+	wixMake    sync.Mutex
+	dirty      bool
+	// the rollup of the newest hour, kept as messages are added (ld_rollup.go: liveSum): liveN is how many it counts, which is the
+	// hour's whole count only when every message of the hour was added since the start
+	live     ldSumMaker
+	liveHour int64
+	liveN    uint64
 
 	capPct, retDays int
 	dirBytes        uint64
@@ -413,8 +421,24 @@ func (s *ldStore) saveMeta(h int64, m *ldHourMeta) {
 
 // scanFile reads one hour's messages (the plain file, or the compressed one) in the order they were written; f returns false to stop.
 // readHour parses a whole hour (nil when it has no file).
-func (s *ldStore) readHour(h int64) []LdMsg {
+func (s *ldStore) readHour(h int64) []LdMsg { return s.readHourN(h, 0) }
+
+// hourCount is how many messages the index says hour h holds (0: none or unknown); s.mu must not be held.
+func (s *ldStore) hourCount(h int64) uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if hm := s.meta[h]; hm != nil {
+		return hm.Count
+	}
+	return 0
+}
+
+// readHourN is readHour of an hour the index says holds n messages (0: unknown).
+func (s *ldStore) readHourN(h int64, n uint64) []LdMsg {
 	var msgs []LdMsg
+	if n > 0 && n < 1<<26 {
+		msgs = make([]LdMsg, 0, n) // the size it will be: growing by doubling leaves up to half the array unused
+	}
 	in := map[string]string{} // the words that repeat in every message (host, program, address, node...) are kept once per hour
 	same := func(p *string) {
 		if len(*p) == 0 || len(*p) > 64 {
@@ -437,16 +461,27 @@ func (s *ldStore) readHour(h int64) []LdMsg {
 	}) {
 		return nil
 	}
+	if cap(msgs) > len(msgs)+len(msgs)/8+64 { // the index was wrong: keep only what is used
+		msgs = append([]LdMsg(nil), msgs...)
+	}
 	return msgs
 }
 
 // scanFile calls f for each message of an hour until it returns false.  A closed hour comes from the cache, and goes into it when
 // it fits under the memory cap; the hour being written, and one that does not fit, is read from its file.
-func (s *ldStore) scanFile(h int64, f func(*LdMsg) bool) {
+func (s *ldStore) scanFile(h int64, f func(*LdMsg) bool) { s.scanFileN(h, 0, f) }
+
+// scanFileN is scanFile of an hour the index says holds n messages (0: unknown, as under s.mu): an hour the cache would not keep
+// is read line by line instead of whole.
+func (s *ldStore) scanFileN(h int64, n uint64, f func(*LdMsg) bool) {
 	if s.closedHour(h) {
 		msgs, ok := s.cache.get(h)
 		if !ok {
-			if msgs = s.readHour(h); msgs == nil {
+			if n > 0 && !s.cache.admits(h, n) {
+				s.streamFile(h, f)
+				return
+			}
+			if msgs = s.readHourN(h, n); msgs == nil {
 				return
 			}
 			s.cache.put(h, msgs) // when it does not fit it is used once and let go
@@ -585,7 +620,7 @@ func (f *ldFilter) rawWordsOK(line []byte) bool {
 // it is not put in the cache then, so a long range does not push the newest hours out.
 func (s *ldStore) scanHour(h int64, flt *ldFilter, f func(*LdMsg) bool) {
 	if !flt.rawUseful() {
-		s.scanFile(h, f)
+		s.scanFileN(h, s.hourCount(h), f)
 		return
 	}
 	if s.closedHour(h) {
@@ -599,6 +634,26 @@ func (s *ldStore) scanHour(h int64, flt *ldFilter, f func(*LdMsg) bool) {
 		}
 	}
 	s.streamFileRaw(h, flt.rawOK, f)
+}
+
+// scanHourOnce is scanHour for a read that should not fill the cache (one of many hours read at once): a cached hour from the
+// cache, any other line by line from its file.
+func (s *ldStore) scanHourOnce(h int64, flt *ldFilter, f func(*LdMsg) bool) {
+	if s.closedHour(h) {
+		if msgs, ok := s.cache.get(h); ok {
+			for i := range msgs {
+				if !f(&msgs[i]) {
+					return
+				}
+			}
+			return
+		}
+	}
+	var pre func([]byte) bool
+	if flt.rawUseful() {
+		pre = flt.rawOK
+	}
+	s.streamFileRaw(h, pre, f)
 }
 
 // streamFileRaw is streamFile with a test on each line's bytes first (nil: every line is parsed).  f's message is the same
@@ -686,6 +741,7 @@ func (s *ldStore) Add(m LdMsg) {
 		s.meta[h] = hm
 	}
 	hm.add(&m)
+	s.liveAdd(h, &m)
 	s.ring = append(s.ring, m)
 	if len(s.ring) > ldRing+ldRing/4 {
 		s.ring = append([]LdMsg(nil), s.ring[len(s.ring)-ldRing:]...)
@@ -1175,9 +1231,9 @@ func ldSevClass(sev int8) int {
 	return 0
 }
 
-func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswer {
-	f := q.filter()
-	r := LdStatsAnswer{Node: s.node, ByHost: map[string]uint64{}, ByProg: map[string]uint64{}, Step: step, Series: map[int64]uint64{}, BySrc: map[string]uint64{}}
+// newLdStatsAnswer is an empty answer to q with buckets of step seconds, and the values q wants a series of.
+func newLdStatsAnswer(node string, q LdQuery, step int64) (LdStatsAnswer, map[string]bool) {
+	r := LdStatsAnswer{Node: node, ByHost: map[string]uint64{}, ByProg: map[string]uint64{}, Step: step, Series: map[int64]uint64{}, BySrc: map[string]uint64{}}
 	var want map[string]bool
 	if q.Field != "" {
 		r.ByField = map[string]uint64{}
@@ -1197,6 +1253,84 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			r.SevSer[i] = map[int64]uint64{}
 		}
 	}
+	return r, want
+}
+
+// addStats adds o (another part of the same question, over other hours) to r.  The caps on how many hosts, programs, senders and
+// values are counted hold as when counting: a name past the cap that r has not seen is left out.
+func addStats(r, o *LdStatsAnswer) {
+	rb := func(b int64) int64 { return b } // a kept hour's part has buckets of an hour: into this answer's
+	if r.Step > 0 && o.Step > 0 && o.Step != r.Step {
+		rb = func(b int64) int64 { return b / r.Step * r.Step }
+	}
+	r.Total += o.Total
+	r.Scanned += o.Scanned
+	r.Partial = r.Partial || o.Partial
+	for i := range r.BySev {
+		r.BySev[i] += o.BySev[i]
+	}
+	add := func(dst, src map[string]uint64, max int) {
+		for k, n := range src {
+			if len(dst) < max || dst[k] > 0 {
+				dst[k] += n
+			}
+		}
+	}
+	add(r.ByHost, o.ByHost, 5000)
+	add(r.ByProg, o.ByProg, 5000)
+	add(r.BySrc, o.BySrc, 5000)
+	if r.Step > 0 {
+		for b, n := range o.Series {
+			r.Series[rb(b)] += n
+		}
+		for i := range o.SevSer {
+			for b, n := range o.SevSer[i] {
+				r.SevSer[i][rb(b)] += n
+			}
+		}
+	}
+	addSer := func(dst map[string]map[int64]uint64, src map[string]map[int64]uint64, max int) {
+		for k, ser := range src {
+			d := dst[k]
+			if d == nil {
+				if len(dst) >= max {
+					continue
+				}
+				d = map[int64]uint64{}
+				dst[k] = d
+			}
+			for b, n := range ser {
+				d[rb(b)] += n
+			}
+		}
+	}
+	if r.SrcSer != nil && o.SrcSer != nil {
+		addSer(r.SrcSer, o.SrcSer, ldSrcSeriesMax)
+	}
+	if r.ByField != nil {
+		for v, n := range o.ByField {
+			if len(r.ByField) >= ldFieldValuesMax && r.ByField[v] == 0 {
+				continue
+			}
+			r.ByField[v] += n
+			if x := o.FieldAgg[v]; x != nil && r.FieldAgg != nil {
+				a := r.FieldAgg[v]
+				if a == nil {
+					a = &ldAgg{}
+					r.FieldAgg[v] = a
+				}
+				a.mergeLive(x)
+			}
+		}
+	}
+	if r.ValSer != nil && o.ValSer != nil {
+		addSer(r.ValSer, o.ValSer, 1<<30)
+	}
+}
+
+func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswer {
+	f := q.filter()
+	r, want := newLdStatsAnswer(s.node, q, step)
 	to := q.To
 	if to == 0 {
 		to = s.now().UnixMilli()
@@ -1214,10 +1348,15 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			meta[h] = &c
 		}
 	}
+	liveH, liveSum := int64(-1), (*ldHourSum)(nil)
+	if q.To == 0 { // the range runs to now: nothing of the newest hour is after its end
+		liveH, liveSum = s.liveSnapshot()
+	}
 	s.mu.Unlock()
 	sort.Slice(hours, func(i, j int) bool { return hours[i] < hours[j] })
-	// count adds n messages like m, at bucket b
-	count := func(m *LdMsg, n uint64, b int64) {
+	var scan []int64 // the hours to read
+	// countInto adds n messages like m, at bucket b, to r; count to this answer
+	countInto := func(r *LdStatsAnswer, m *LdMsg, n uint64, b int64) {
 		r.Total += n
 		r.BySev[m.Sev&7] += n
 		if len(r.ByHost) < 5000 || r.ByHost[m.Host] > 0 {
@@ -1241,7 +1380,7 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 					}
 					a.measure(q.Measure, q.MField, m, fs, n)
 				}
-				if want[v] {
+				if want[v] && r.ValSer != nil {
 					vs := r.ValSer[v]
 					if vs == nil {
 						vs = map[int64]uint64{}
@@ -1264,10 +1403,37 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			}
 		}
 	}
+	count := func(m *LdMsg, n uint64, b int64) { countInto(&r, m, n, b) }
 	// whole closed hours that a filter with words has not counted before: counted several at a time first, then taken like the
 	// rest from what is kept (ld_hits.go)
 	keepHour := func(h int64) bool {
 		return f.hitsUseful() && s.closedHour(h) && q.Field == "" && (step == 0 || step%3600 == 0) && h*3600*1000 >= q.From && (h+1)*3600*1000-1 <= to
+	}
+	// whole closed hours of a question about a field's values: each hour's part of the answer is kept (ld_hits.go: fieldPut), so the
+	// page's refresh reads only the hour being written
+	fieldKeep := func(h int64) bool {
+		return q.Field != "" && s.closedHour(h) && (step == 0 || step%3600 == 0) && h*3600*1000 >= q.From && (h+1)*3600*1000-1 <= to
+	}
+	fkey := ""
+	if q.Field != "" {
+		fkey = ldFieldKey(f, q, step > 0)
+	}
+	// addPart adds the part of hour h, and the hour's count of each value that has a series of its own
+	addPart := func(r, p *LdStatsAnswer, h int64) {
+		addStats(r, p)
+		if r.ValSer != nil && step > 0 {
+			b := h * 3600 / step * step
+			for v := range want {
+				if n := p.ByField[v]; n > 0 && (len(r.ValSer) < len(want) || r.ValSer[v] != nil) {
+					vs := r.ValSer[v]
+					if vs == nil {
+						vs = map[int64]uint64{}
+						r.ValSer[v] = vs
+					}
+					vs[b] += n
+				}
+			}
+		}
 	}
 	var need []int64
 	for _, h := range hours {
@@ -1288,22 +1454,34 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 		if !f.hourOK(meta[h]) || !s.wixOK(h, meta[h], f) {
 			continue
 		}
-		// a whole closed hour, and nothing asked that a rollup cannot answer: add up its rollup instead of reading it
-		if s.closedHour(h) && q.Field == "" && sumHourOK(f, step, h, q.From, to) {
-			if sum := s.hourSum(h, meta[h].Count); sum != nil {
-				var b int64
-				if step > 0 {
-					b = h * 3600 / step * step
+		// a whole closed hour, and nothing asked that a rollup cannot answer: add up its rollup instead of reading it; the newest
+		// hour, when the range runs to now, from the rollup kept as its messages came in
+		var sum *ldHourSum
+		if q.Field == "" && h == liveH && liveSum != nil && sumHourOK(f, step, h, q.From, (h+1)*3600*1000-1) {
+			sum = liveSum
+		} else if s.closedHour(h) && q.Field == "" && sumHourOK(f, step, h, q.From, to) {
+			sum = s.hourSum(h, meta[h].Count)
+		}
+		if sum != nil {
+			var b int64
+			if step > 0 {
+				b = h * 3600 / step * step
+			}
+			var m LdMsg
+			for i := range sum.rows {
+				x := &sum.rows[i]
+				m.Host, m.Prog, m.Src, m.Sev = sum.names[x.host], sum.names[x.prog], sum.names[x.src], x.sev
+				if f.match(&m) {
+					count(&m, x.n, b)
 				}
-				var m LdMsg
-				for i := range sum.rows {
-					x := &sum.rows[i]
-					m.Host, m.Prog, m.Src, m.Sev = sum.names[x.host], sum.names[x.prog], sum.names[x.src], x.sev
-					if f.match(&m) {
-						count(&m, x.n, b)
-					}
-				}
-				r.Scanned += sum.count
+			}
+			r.Scanned += sum.count
+			continue
+		}
+		// a whole closed hour whose values of the field were counted before (ld_hits.go: fieldGet)
+		if fieldKeep(h) {
+			if p := s.fieldGet(fkey, h, meta[h].Count, q.Measure, q.MField); p != nil {
+				addPart(&r, p, h)
 				continue
 			}
 		}
@@ -1324,8 +1502,27 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 				continue
 			}
 		}
+		scan = append(scan, h)
+	}
+	// the hours that must be read: one by one (an hour that fits is kept in the cache), or several at a time when there are more,
+	// each worker with its own filter and its own part of the answer, added up at the end; those do not fill the cache, so a long
+	// range does not push the newest hours out, and an hour not in it is read line by line instead of whole
+	scanOne := func(into *LdStatsAnswer, f *ldFilter, h int64, keepCache bool) {
+		keep := keepHour(h)
 		var mk ldSumMaker
-		s.scanHour(h, f, func(m *LdMsg) bool {
+		// an hour whose part is kept is counted on its own (in buckets of an hour) and then added
+		r, bs, fk := into, step, fieldKeep(h)
+		var part LdStatsAnswer
+		if fk {
+			if step > 0 {
+				bs = 3600
+			}
+			pq := q
+			pq.Values = nil // the values' series come from the part's counts per value (addPart)
+			part, _ = newLdStatsAnswer(s.node, pq, bs)
+			r = &part
+		}
+		each := func(m *LdMsg) bool {
 			r.Scanned++
 			if r.Scanned&0x3fff == 0 && ctx.Err() != nil {
 				r.Partial = true
@@ -1335,22 +1532,71 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 				return true
 			}
 			var b int64
-			if step > 0 {
-				b = (m.T / 1000) / step * step
+			if bs > 0 {
+				b = (m.T / 1000) / bs * bs
 			}
-			count(m, 1, b)
+			countInto(r, m, 1, b)
 			if keep {
 				mk.add(m)
 			}
 			return true
-		})
-		if r.Partial {
-			break
 		}
-		if keep {
+		if keepCache {
+			s.scanHour(h, f, each)
+		} else {
+			s.scanHourOnce(h, f, each)
+		}
+		if keep && !r.Partial {
 			if sum := mk.done(meta[h].Count); sum != nil {
 				s.hitsPut(f, h, true, &ldHits{count: meta[h].Count, sum: sum})
 			}
+		}
+		if fk {
+			if !part.Partial {
+				s.fieldPut(fkey, h, meta[h].Count, q.Measure, q.MField, &part)
+			}
+			addPart(into, &part, h)
+		}
+	}
+	if workers := min(ldScanWorkers(), len(scan)); workers <= 1 || r.Partial {
+		for _, h := range scan {
+			if r.Partial || ctx.Err() != nil {
+				r.Partial = true
+				break
+			}
+			scanOne(&r, f, h, true)
+		}
+	} else {
+		parts := make([]LdStatsAnswer, workers)
+		var mu sync.Mutex
+		next := 0
+		var wg sync.WaitGroup
+		for w := range parts {
+			parts[w], _ = newLdStatsAnswer(s.node, q, step)
+			wg.Add(1)
+			go func(p *LdStatsAnswer) {
+				defer wg.Done()
+				f := q.filter() // a filter is one goroutine's
+				for !p.Partial {
+					mu.Lock()
+					if next >= len(scan) {
+						mu.Unlock()
+						return
+					}
+					h := scan[next]
+					next++
+					mu.Unlock()
+					if ctx.Err() != nil {
+						p.Partial = true
+						return
+					}
+					scanOne(p, f, h, false)
+				}
+			}(&parts[w])
+		}
+		wg.Wait()
+		for i := range parts {
+			addStats(&r, &parts[i])
 		}
 	}
 	if r.FieldAgg != nil {

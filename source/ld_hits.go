@@ -117,6 +117,12 @@ func (s *ldStore) hitsDrop(h int64) {
 			delete(s.hits, k)
 		}
 	}
+	for k, x := range s.fparts {
+		if k.h == h {
+			s.fpartBytes -= x.size
+			delete(s.fparts, k)
+		}
+	}
 }
 
 // ldSumMaker counts messages by row into an ldHourSum (nil from done when there were more than ldSumMax rows).
@@ -168,4 +174,122 @@ func (b *ldSumMaker) done(count uint64) *ldHourSum {
 	}
 	b.sum.count = count
 	return &b.sum
+}
+
+// ── the values of a field, per closed hour ───────────────────────────────────────────────────────────────────────────────────
+// A question about a field's values (the Logs page's Values card: count, how many different, sum, over time) reads every message
+// of the range, so each whole closed hour's part of the answer is kept, under its own budget, and the page's refresh reads only the
+// hour being written.  A part is kept unsealed (exact sets and sketches), so parts add up exactly as reading the hours would.  When
+// the budget is reached the oldest hours go first.
+
+const ldFieldPartsMin = 64 << 20 // the budget is a tenth of the hour cache's cap, at least this
+
+type ldFieldPart struct {
+	count   uint64 // the hour's count in the index when this was made
+	measure string // what was measured besides the count ("": nothing), of which field
+	mfield  string
+	part    *LdStatsAnswer
+	size    int
+}
+
+type ldFieldPartKey struct {
+	k string
+	h int64
+}
+
+// ldFieldKey is what the part of an hour depends on besides the hour and what is measured: the filter, the field, and whether
+// there are series at all.  A part made with a measure (how many different, a sum) also serves the same question without one,
+// and the values' own series (Over time) come from its counts per value, so the Values card's chart reads nothing again.
+func ldFieldKey(f *ldFilter, q LdQuery, series bool) string {
+	return fmt.Sprintf("%s\x01%q\x00%v", f.key(), q.Field, series)
+}
+
+// ldPartSize estimates what a part holds.
+func ldPartSize(p *LdStatsAnswer) int {
+	size := 512
+	for k := range p.ByField {
+		size += 64 + len(k)
+	}
+	for _, a := range p.FieldAgg {
+		size += 64
+		if a.reg != nil {
+			size += len(a.reg)
+		}
+		for v := range a.set {
+			size += 32 + len(v)
+		}
+	}
+	for k := range p.ByHost {
+		size += 48 + len(k)
+	}
+	for k := range p.ByProg {
+		size += 48 + len(k)
+	}
+	for k := range p.BySrc {
+		size += 48 + len(k)
+	}
+	for _, ser := range p.SrcSer {
+		size += 64 + 32*len(ser)
+	}
+	for _, ser := range p.ValSer {
+		size += 64 + 32*len(ser)
+	}
+	return size
+}
+
+func (s *ldStore) fieldBudget() int {
+	limit, _ := s.cache.stat2()
+	return max(ldFieldPartsMin, int(limit/10))
+}
+
+// fieldGet is the kept part of hour h for a question measuring measure of mfield ("": only counting).
+func (s *ldStore) fieldGet(k string, h int64, count uint64, measure, mfield string) *LdStatsAnswer {
+	s.hitMu.Lock()
+	defer s.hitMu.Unlock()
+	x := s.fparts[ldFieldPartKey{k, h}]
+	if x == nil || x.count != count || (measure != "" && (x.measure != measure || x.mfield != mfield)) {
+		return nil
+	}
+	return x.part
+}
+
+// fieldPut keeps the part of hour h; it takes the place of one that measured something else.
+func (s *ldStore) fieldPut(k string, h int64, count uint64, measure, mfield string, p *LdStatsAnswer) {
+	size := ldPartSize(p) + len(k)
+	budget := s.fieldBudget()
+	if size > budget/8 {
+		return
+	}
+	s.hitMu.Lock()
+	defer s.hitMu.Unlock()
+	if s.fparts == nil {
+		s.fparts = map[ldFieldPartKey]*ldFieldPart{}
+	}
+	key := ldFieldPartKey{k, h}
+	if old := s.fparts[key]; old != nil {
+		if old.count == count && (old.measure == measure && old.mfield == mfield || measure == "") {
+			return // made at the same time by another question, or one that measured more: keep that
+		}
+		s.fpartBytes -= old.size
+		delete(s.fparts, key)
+	}
+	if s.fpartBytes+size > budget { // the oldest hours go first
+		keys := make([]ldFieldPartKey, 0, len(s.fparts))
+		for x := range s.fparts {
+			keys = append(keys, x)
+		}
+		sort.Slice(keys, func(i, j int) bool { return keys[i].h < keys[j].h })
+		for _, x := range keys {
+			if s.fpartBytes+size <= budget || x.h >= h {
+				break
+			}
+			s.fpartBytes -= s.fparts[x].size
+			delete(s.fparts, x)
+		}
+		if s.fpartBytes+size > budget {
+			return
+		}
+	}
+	s.fparts[key] = &ldFieldPart{count: count, measure: measure, mfield: mfield, part: p, size: size}
+	s.fpartBytes += size
 }

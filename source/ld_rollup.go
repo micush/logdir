@@ -206,3 +206,26 @@ type ldSumEntry struct {
 func sumHourOK(f *ldFilter, step int64, h, from, to int64) bool {
 	return len(f.expr) == 0 && (step == 0 || step%3600 == 0) && h*3600*1000 >= from && (h+1)*3600*1000-1 <= to
 }
+
+// liveAdd counts message m of hour h into the newest hour's rollup; s.mu is held.  A message of an older
+// hour (late, or with its own time) leaves it alone: that hour is no longer the newest, and its rollup is made when it is compressed.
+func (s *ldStore) liveAdd(h int64, m *LdMsg) {
+	if h < s.liveHour {
+		return
+	}
+	if h > s.liveHour {
+		s.live, s.liveHour, s.liveN = ldSumMaker{}, h, 0
+	}
+	s.live.add(m)
+	s.liveN++
+}
+
+// liveSnapshot is a copy of the newest hour's rollup and its hour, or nil when it does not count every message of that hour (the
+// daemon started during the hour, or it has too many rows); s.mu is held.
+func (s *ldStore) liveSnapshot() (int64, *ldHourSum) {
+	hm := s.meta[s.liveHour]
+	if hm == nil || s.live.full || s.liveN == 0 || s.liveN != hm.Count {
+		return -1, nil
+	}
+	return s.liveHour, &ldHourSum{count: s.liveN, names: append([]string(nil), s.live.sum.names...), rows: append([]ldSumRow(nil), s.live.sum.rows...)}
+}

@@ -49,8 +49,10 @@ func TestHourCacheServesClosedHoursUnderACap(t *testing.T) {
 		t.Errorf("with a tiny cap: %d messages, %+v", len(small.Msgs), s.cache.stat())
 	}
 	// room for about two hours: the newest are kept, the oldest go
-	one := ldHourBytes(first.Msgs[:30])
-	s.cache.total = func() uint64 { return (one*2 + one/2) * 100 / 90 }
+	hour := make([]LdMsg, 30)
+	copy(hour, first.Msgs[:30])
+	one := ldHourBytes(hour)
+	s.cache.total = func() uint64 { return (one*2 + one/2) * 100 / ldDefaultMemPct }
 	s.cache.set(0, 0)
 	s.Search(context.Background(), q)
 	st = s.cache.stat()

@@ -140,6 +140,28 @@ func (a *ldAgg) merge(o *ldAgg) error {
 	return nil
 }
 
+// mergeLive adds another part's counts (not sealed: over other hours of the same node) to this one.
+func (a *ldAgg) mergeLive(o *ldAgg) {
+	a.Sum += o.Sum
+	a.Nums += o.Nums
+	if o.reg == nil {
+		for v := range o.set {
+			a.add(v)
+		}
+		return
+	}
+	if a.reg == nil {
+		a.reg = make([]uint8, ldHLLM)
+		for x := range a.set {
+			hllAdd(a.reg, x)
+		}
+		a.set = nil
+	}
+	for i, x := range o.reg {
+		a.reg[i] = max(a.reg[i], x)
+	}
+}
+
 // measure adds message m (with fields fs) to a, for a measure of kind over field mf; n is how many such messages.
 func (a *ldAgg) measure(kind, mf string, m *LdMsg, fs []ldKV, n uint64) {
 	v := ldFieldOf(m, fs, mf)

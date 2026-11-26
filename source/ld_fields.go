@@ -52,8 +52,19 @@ var ldFieldAlias = map[string]string{
 }
 
 type ldFieldSet struct {
-	kv   []ldKV
-	seen map[string]bool
+	kv  []ldKV
+	buf [16]ldKV // the first fields, without an allocation
+}
+
+// has says whether key k is already there: a look along the list, which for the few fields of a message is quicker than a map
+// made for every message (at most ldFieldsMax and their aliases).
+func (fs *ldFieldSet) has(k string) bool {
+	for i := range fs.kv {
+		if fs.kv[i].Key == k {
+			return true
+		}
+	}
+	return false
 }
 
 func (fs *ldFieldSet) add(k, v string) {
@@ -67,20 +78,18 @@ func (fs *ldFieldSet) add(k, v string) {
 	if len(v) > ldFieldValMax {
 		v = v[:ldFieldValMax]
 	}
-	if fs.seen == nil {
-		fs.seen = map[string]bool{}
+	if fs.kv == nil {
+		fs.kv = fs.buf[:0]
 	}
-	if fs.seen[k] { // the first one counts (a JSON key and a key=value inside its text: the JSON's)
+	if fs.has(k) { // the first one counts (a JSON key and a key=value inside its text: the JSON's)
 		return
 	}
-	fs.seen[k] = true
 	fs.kv = append(fs.kv, ldKV{k, v})
 	a := ldFieldAlias[k]
 	if (k == "src" || k == "dst") && ldLooksIP(v) { // iptables SRC= DST=, CEF src= dst=: only when it is an address
 		a = k + "_ip"
 	}
-	if a != "" && !fs.seen[a] {
-		fs.seen[a] = true
+	if a != "" && !fs.has(a) {
 		fs.kv = append(fs.kv, ldKV{a, v})
 	}
 }
@@ -126,7 +135,7 @@ func ldKVFields(fs *ldFieldSet, s string) {
 			i = max(j, i+1)
 			continue
 		}
-		key := strings.TrimRight(s[i:j], ":.-")
+		key := ldTrimRight(s[i:j], ":.-")
 		j++ // past =
 		var val string
 		if j < len(s) && (s[j] == '"' || s[j] == '\'') {
@@ -150,13 +159,22 @@ func ldKVFields(fs *ldFieldSet, s string) {
 				}
 				k++
 			}
-			val, j = strings.TrimRight(s[j:k], ",;"), k
+			val, j = ldTrimRight(s[j:k], ",;"), k
 		}
 		if key != "" {
 			fs.add(key, val)
 		}
 		i = j
 	}
+}
+
+// ldTrimRight is strings.TrimRight for a few ASCII bytes, without the set that call builds each time (it ran for every key of
+// every message counted).
+func ldTrimRight(s, cut string) string {
+	for len(s) > 0 && strings.IndexByte(cut, s[len(s)-1]) >= 0 {
+		s = s[:len(s)-1]
+	}
+	return s
 }
 
 func ldKeyStart(c byte) bool { return c == '_' || ('a' <= c && c <= 'z') || ('A' <= c && c <= 'Z') }

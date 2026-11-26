@@ -9,10 +9,10 @@ import (
 
 // The hour cache: the messages of closed hours, parsed, kept in memory so a search of the last few hours does not read, decompress and
 // parse the files again.  Like flowdir's rollups it is capped at a percentage of the machine's memory (the container limit when that is
-// smaller), 90 unless set, and the oldest hours go first.  The hour being written is never cached, and an hour that does not fit is read
+// smaller), 50 unless set, and the oldest hours go first.  The hour being written is never cached, and an hour that does not fit is read
 // from its file as before, so the cap costs speed only.
 const (
-	ldDefaultMemPct = 70
+	ldDefaultMemPct = 50 // leaves room for what searches read beyond the cache (see memlimit.go)
 	ldWarmHours     = 24 // the hours read into the cache when the daemon starts
 	ldMsgBase       = uint64(unsafe.Sizeof(LdMsg{}))
 )
@@ -30,7 +30,7 @@ type ldCache struct {
 	total    func() uint64 // the machine's memory
 	hit      uint64
 	miss     uint64
-	rejected uint64 // hours that did not fit
+	rejected uint64 // hours that did not fit (or, by admits, would not have)
 	dropped  uint64 // hours the cap pushed out
 }
 
@@ -75,7 +75,7 @@ func (c *ldCache) capLocked() (uint64, bool) {
 
 // ldHourBytes estimates what a parsed hour holds.
 func ldHourBytes(msgs []LdMsg) uint64 {
-	n := uint64(len(msgs)) * ldMsgBase
+	n := uint64(cap(msgs)) * ldMsgBase // the array as allocated, not only the part in use
 	for i := range msgs {
 		m := &msgs[i]
 		n += uint64(len(m.Host) + len(m.Prog) + len(m.PID) + len(m.Msg) + len(m.Src) + len(m.Via) + len(m.Node) + len(m.MID) + len(m.SD))
@@ -121,6 +121,36 @@ func (c *ldCache) shrinkLocked(extra uint64, keep int64) bool {
 		c.dropped++
 	}
 	return c.bytes+extra <= limit
+}
+
+// admits says whether an hour of n messages could be kept, by what the hours held weigh per message: false when it would not fit
+// even after the hours older than it went, so the caller reads it line by line instead of parsing it whole for nothing.
+func (c *ldCache) admits(h int64, n uint64) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	limit, ok := c.capLocked()
+	if !ok {
+		return false
+	}
+	per, msgs := uint64(ldMsgBase+120), uint64(0) // a guess until something is held
+	for _, e := range c.hours {
+		msgs += uint64(len(e.msgs))
+	}
+	if msgs > 0 {
+		per = c.bytes / msgs
+	}
+	free := c.bytes
+	for x, e := range c.hours {
+		if x >= h {
+			free -= e.size
+		}
+	}
+	// what stays (the hours newer than h) plus this one must fit
+	if c.bytes-free+n*per > limit {
+		c.rejected++
+		return false
+	}
+	return true
 }
 
 // put keeps an hour when it fits, pushing out older hours to make room; an hour older than everything held, or too big, is not kept.
@@ -186,8 +216,16 @@ func (s *ldStore) Warm() {
 		if _, ok := s.cache.get(h); ok {
 			continue
 		}
-		if msgs := s.readHour(h); msgs != nil && !s.cache.put(h, msgs) {
+		if msgs := s.readHourN(h, s.hourCount(h)); msgs != nil && !s.cache.put(h, msgs) {
 			return // full: the older hours would not fit either
 		}
 	}
+}
+
+// stat2 is the cap and what is held, without the counters.
+func (c *ldCache) stat2() (limit, held uint64) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	limit, _ = c.capLocked()
+	return limit, c.bytes
 }

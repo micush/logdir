@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -87,6 +88,11 @@ type ldFilter struct {
 	hostSrc  map[string]bool   // senders whose name matches the host filter: their messages match it too
 	srcSet   map[string]bool   // senders picked by name: nil is no such filter, an empty set matches nothing
 	wixUse   int8              // the word index can rule hours out: 0 not worked out yet, 1 yes, -1 no
+	raw      [][]string        // per OR group, pieces a stored line must hold (lower case) to match it (rawWordsOK)
+	rawUse   int8              // the words can rule lines out from their bytes: 0 not worked out yet, 1 yes, -1 no
+	rawField bool              // some of raw are field values (which a few formats make up: ldFieldsMadeUp)
+	lower    []byte            // scratch: the lower-cased line
+	hkey     string            // key, once worked out (ld_hits.go)
 }
 
 func (f *ldFilter) hostOK(h string) bool { return f.host == "" || ldGlob(f.host, strings.ToLower(h)) }
@@ -255,6 +261,9 @@ type ldStore struct {
 	wixMu    sync.Mutex
 	wixes    map[int64]ldWixEntry
 	wixBytes int
+	hitMu    sync.Mutex // what filters with words found in closed hours (ld_hits.go)
+	hits     map[ldHitKey]*ldHits
+	hitBytes int
 	wixMake  sync.Mutex
 	dirty    bool
 
@@ -267,7 +276,7 @@ type ldStore struct {
 }
 
 func newLdStore(dir, node string) *ldStore {
-	return &ldStore{cache: newLdCache(), sums: map[int64]ldSumEntry{}, wixes: map[int64]ldWixEntry{}, dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
+	return &ldStore{cache: newLdCache(), sums: map[int64]ldSumEntry{}, wixes: map[int64]ldWixEntry{}, hits: map[ldHitKey]*ldHits{}, dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
 }
 
 func ldVolumeSize(dir string) (uint64, error) {
@@ -447,18 +456,111 @@ func ldRawSev(line []byte) int {
 
 // rawOK says from a stored line's bytes whether it can match (false: skip it without parsing); a line it cannot read is parsed.
 func (f *ldFilter) rawOK(line []byte) bool {
-	if f.minSev < 0 {
+	if f.minSev >= 0 {
+		if sev := ldRawSev(line); sev >= 0 && (sev > f.minSev || (f.sevExact && sev != f.minSev)) {
+			return false
+		}
+	}
+	return f.rawWordsOK(line)
+}
+
+// rawUseful says whether rawOK can rule any line out (a severity, or words it can look for in the bytes).
+func (f *ldFilter) rawUseful() bool { return f.minSev >= 0 || f.rawWords() }
+
+// rawWords works out raw: for each OR group, the pieces of its words and field values (split at spaces and *) that a matching
+// message's host, program, text or structured data must hold, and so the stored line too.  Only pieces of plain ASCII that JSON
+// writes as they are (no " \ < > & or control characters) are used, and none that may be in a sender's name (the text a word is
+// looked for in includes it, the line does not).  When a group has no such piece any line can match, and none is ruled out.
+func (f *ldFilter) rawWords() bool {
+	if f.rawUse != 0 {
+		return f.rawUse > 0
+	}
+	f.rawUse = -1
+	if len(f.groups) == 0 {
+		return false
+	}
+	raw := make([][]string, len(f.groups))
+	for gi, g := range f.groups {
+		for _, t := range g {
+			if t.neg {
+				continue
+			}
+			v, field := t.text, false
+			if t.field != nil {
+				if t.field.op != "=" || !t.field.lit {
+					continue
+				}
+				v, field = t.field.val, true
+			}
+			for _, p := range strings.FieldsFunc(v, func(r rune) bool { return r == ' ' || r == '*' }) {
+				if !ldRawSafe(p) || (!field && len(f.srcWords) > 0 && f.mayBeSenderName(p)) {
+					continue
+				}
+				raw[gi] = append(raw[gi], p)
+				f.rawField = f.rawField || field
+			}
+		}
+		if len(raw[gi]) == 0 {
+			return false
+		}
+	}
+	f.raw, f.rawUse = raw, 1
+	return true
+}
+
+// ldRawSafe: is p written in a JSON string as it is?
+func ldRawSafe(p string) bool {
+	for i := 0; i < len(p); i++ {
+		if c := p[i]; c <= ' ' || c >= 0x7f || c == '"' || c == '\\' || c == '<' || c == '>' || c == '&' {
+			return false
+		}
+	}
+	return p != ""
+}
+
+// rawWordsOK: can the stored line match the words, as far as its bytes tell?  A line with an escape (\u) or a byte outside ASCII
+// (whose lower case may differ) is always parsed.
+func (f *ldFilter) rawWordsOK(line []byte) bool {
+	if !f.rawWords() {
 		return true
 	}
-	sev := ldRawSev(line)
-	return sev < 0 || (sev <= f.minSev && (!f.sevExact || sev == f.minSev))
+	if bytes.Contains(line, []byte(`\u`)) {
+		return true
+	}
+	low := f.lower[:0]
+	for _, c := range line {
+		if c >= 0x80 {
+			return true
+		}
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		low = append(low, c)
+	}
+	f.lower = low
+	if f.rawField && ldFieldsMadeUp(unsafe.String(unsafe.SliceData(low), len(low))) {
+		return true
+	}
+	for _, g := range f.raw {
+		all := true
+		for _, p := range g {
+			if !bytes.Contains(low, unsafe.Slice(unsafe.StringData(p), len(p))) {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
 }
 
 // scanHour is scanFile for a search or a count: an hour that is not in the cache, when the filter can rule lines out from their
-// bytes (a severity: the Errors and Warnings tiles), is read straight from its file and only the lines that can match are parsed;
+// bytes (a severity, as for the Errors and Warnings tiles, or words: rawOK), is read straight from its file and only the lines that can match are parsed;
 // it is not put in the cache then, so a long range does not push the newest hours out.
 func (s *ldStore) scanHour(h int64, flt *ldFilter, f func(*LdMsg) bool) {
-	if flt.minSev < 0 {
+	if !flt.rawUseful() {
 		s.scanFile(h, f)
 		return
 	}
@@ -475,7 +577,8 @@ func (s *ldStore) scanHour(h int64, flt *ldFilter, f func(*LdMsg) bool) {
 	s.streamFileRaw(h, flt.rawOK, f)
 }
 
-// streamFileRaw is streamFile with a test on each line's bytes first (nil: every line is parsed).
+// streamFileRaw is streamFile with a test on each line's bytes first (nil: every line is parsed).  f's message is the same
+// variable for every line: f must copy what it keeps.
 func (s *ldStore) streamFileRaw(h int64, pre func([]byte) bool, f func(*LdMsg) bool) bool {
 	var r io.Reader
 	for _, gz := range []bool{false, true} {
@@ -486,10 +589,11 @@ func (s *ldStore) streamFileRaw(h int64, pre func([]byte) bool, f func(*LdMsg) b
 		defer fh.Close()
 		r = fh
 		if gz {
-			zr, err := ldLzReader(fh)
+			zr, err := ldLzGet(fh)
 			if err != nil {
 				return false
 			}
+			defer ldLzPut(zr)
 			r = zr
 		}
 		break
@@ -497,12 +601,29 @@ func (s *ldStore) streamFileRaw(h int64, pre func([]byte) bool, f func(*LdMsg) b
 	if r == nil {
 		return false
 	}
-	br := bufio.NewReaderSize(r, 1<<20)
+	br := ldLinePool.Get().(*bufio.Reader)
+	br.Reset(r)
+	defer func() { br.Reset(nil); ldLinePool.Put(br) }()
+	in := map[string]string{} // host, program, address... kept once for the hour (ldDecodeLine)
+	var long []byte
+	var m LdMsg // one for every line: f gets it only until it returns
 	for {
-		line, err := br.ReadBytes('\n')
+		line, err := br.ReadSlice('\n')
+		if err == bufio.ErrBufferFull { // a line longer than the buffer
+			long = append(long[:0], line...)
+			for err == bufio.ErrBufferFull {
+				line, err = br.ReadSlice('\n')
+				long = append(long, line...)
+			}
+			line = long
+		}
 		if len(line) > 1 && (pre == nil || pre(line)) {
-			var m LdMsg
-			if json.Unmarshal(line, &m) == nil && !f(&m) {
+			ok := ldDecodeLine(line, &m, in)
+			if !ok {
+				m = LdMsg{}
+				ok = json.Unmarshal(line, &m) == nil
+			}
+			if ok && !f(&m) {
 				return true
 			}
 		}
@@ -511,6 +632,9 @@ func (s *ldStore) streamFileRaw(h int64, pre func([]byte) bool, f func(*LdMsg) b
 		}
 	}
 }
+
+// ldLinePool keeps the 1 MB line readers of streamFileRaw between reads.
+var ldLinePool = sync.Pool{New: func() any { return bufio.NewReaderSize(nil, 1<<20) }}
 
 // Add stores one message.
 func (s *ldStore) Add(m LdMsg) {
@@ -713,6 +837,7 @@ func (s *ldStore) enforce() {
 		s.cache.drop(f.h)
 		s.dropSum(f.h)
 		s.dropWix(f.h)
+		s.hitsDrop(f.h)
 	}
 	for _, f := range list {
 		if f.h == curH {
@@ -832,50 +957,128 @@ func (s *ldStore) Search(ctx context.Context, q LdQuery) LdAnswer {
 		}
 	}
 	var out []LdMsg
+	var todo []int64 // the hours that can hold a match, in the order they are wanted
 	for _, h := range hours {
+		if f.hourOK(meta[h]) && s.wixOK(h, meta[h], f) {
+			todo = append(todo, h)
+		}
+	}
+	// newest first, the hours are read a few at a time (1, 2, 4... up to ldScanWorkers): a common word is found in the first
+	// hour, a rare one needs them all
+	type hourRes struct {
+		hm      []LdMsg
+		scanned uint64
+		partial bool
+	}
+	batch := 1
+	for len(todo) > 0 {
 		if ctx.Err() != nil {
 			a.Partial = true
 			break
 		}
-		if !f.hourOK(meta[h]) || !s.wixOK(h, meta[h], f) {
-			continue
-		}
-		var hm []LdMsg
-		s.scanHour(h, f, func(m *LdMsg) bool {
-			a.Scanned++
-			if a.Scanned&0x3fff == 0 && ctx.Err() != nil {
-				a.Partial = true
-				return false
-			}
-			if m.T < q.From || m.T > to || !f.match(m) {
-				return true
-			}
-			hm = append(hm, *m)
-			if q.Oldest && len(out)+len(hm) > q.Limit {
-				return false
-			}
-			return true
-		})
-		sort.SliceStable(hm, func(i, j int) bool { return hm[i].T < hm[j].T })
-		if q.Oldest {
-			out = append(out, hm...)
-			if len(out) > q.Limit {
-				out, a.Truncated = out[:q.Limit], true
-				break
-			}
+		n := min(batch, len(todo))
+		rs := make([]hourRes, n)
+		if n == 1 {
+			r := &rs[0]
+			r.hm, r.scanned, r.partial = s.searchHour(ctx, f, q, to, todo[0], meta[todo[0]].Count, q.Limit+1-len(out))
 		} else {
-			out = append(hm, out...)
-			if len(out) > q.Limit {
-				out, a.Truncated = out[len(out)-q.Limit:], true
+			var wg sync.WaitGroup
+			for i := 0; i < n; i++ {
+				wg.Add(1)
+				go func(r *hourRes, h int64) {
+					defer wg.Done()
+					r.hm, r.scanned, r.partial = s.searchHour(ctx, q.filter(), q, to, h, meta[h].Count, 0) // a filter is one goroutine's
+				}(&rs[i], todo[i])
+			}
+			wg.Wait()
+		}
+		todo = todo[n:]
+		done := false
+		for i := range rs {
+			a.Scanned += rs[i].scanned
+			hm := rs[i].hm
+			if q.Oldest {
+				out = append(out, hm...)
+				if len(out) > q.Limit {
+					out, a.Truncated, done = out[:q.Limit], true, true
+				}
+			} else {
+				out = append(hm, out...)
+				if len(out) > q.Limit {
+					out, a.Truncated, done = out[len(out)-q.Limit:], true, true
+				}
+			}
+			if rs[i].partial {
+				a.Partial, done = true, true
+			}
+			if done {
 				break
 			}
 		}
-		if a.Partial {
+		if done {
 			break
+		}
+		if !q.Oldest { // oldest first stops reading an hour once it has enough, which needs the hours one by one
+			batch = min(batch*2, ldScanWorkers())
 		}
 	}
 	a.Msgs = out
 	return a
+}
+
+// ldScanWorkers is how many hours a search or a count reads at the same time: about half the cores (at most 8), so that
+// receiving syslog is not held up.
+func ldScanWorkers() int { return min(runtime.GOMAXPROCS(0)/2+1, 8) }
+
+// searchHour gives an hour's matches within the range, in time order.  stop > 0 (oldest first): stop reading once there are that
+// many.  A closed hour's matches for a filter with words are kept when there are few (ld_hits.go) and used next time.
+func (s *ldStore) searchHour(ctx context.Context, f *ldFilter, q LdQuery, to, h int64, count uint64, stop int) (hm []LdMsg, scanned uint64, partial bool) {
+	keep := f.hitsUseful() && s.closedHour(h)
+	if keep {
+		if x := s.hitsGet(f, h, false, count); x != nil {
+			for i := range x.msgs {
+				if m := &x.msgs[i]; m.T >= q.From && m.T <= to {
+					hm = append(hm, *m)
+				}
+			}
+			sort.SliceStable(hm, func(i, j int) bool { return hm[i].T < hm[j].T })
+			return hm, 0, false
+		}
+	}
+	var all []LdMsg // with keep: every match of the hour, whatever its time
+	whole := true
+	s.scanHour(h, f, func(m *LdMsg) bool {
+		scanned++
+		if scanned&0x3fff == 0 && ctx.Err() != nil {
+			partial, whole = true, false
+			return false
+		}
+		in := m.T >= q.From && m.T <= to
+		if (!in && !keep) || !f.match(m) {
+			return true
+		}
+		if keep {
+			if len(all) < ldHitsMsgs {
+				all = append(all, *m)
+			} else {
+				keep, all = false, nil
+			}
+		}
+		if !in {
+			return true
+		}
+		hm = append(hm, *m)
+		if q.Oldest && stop > 0 && len(hm) >= stop {
+			whole = false
+			return false
+		}
+		return true
+	})
+	if keep && whole {
+		s.hitsPut(f, h, false, &ldHits{count: count, msgs: all[:len(all):len(all)]})
+	}
+	sort.SliceStable(hm, func(i, j int) bool { return hm[i].T < hm[j].T })
+	return hm, scanned, partial
 }
 
 // Tail is the newest messages that match, from the memory ring.
@@ -997,8 +1200,24 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			}
 		}
 	}
+	// whole closed hours that a filter with words has not counted before: counted several at a time first, then taken like the
+	// rest from what is kept (ld_hits.go)
+	keepHour := func(h int64) bool {
+		return f.hitsUseful() && s.closedHour(h) && q.Field == "" && (step == 0 || step%3600 == 0) && h*3600*1000 >= q.From && (h+1)*3600*1000-1 <= to
+	}
+	var need []int64
 	for _, h := range hours {
-		if ctx.Err() != nil {
+		if keepHour(h) && f.hourOK(meta[h]) && s.wixOK(h, meta[h], f) && s.hitsGet(f, h, true, meta[h].Count) == nil {
+			need = append(need, h)
+		}
+	}
+	if len(need) > 1 {
+		n, partial := s.countHours(ctx, q, need, meta)
+		r.Scanned += n
+		r.Partial = r.Partial || partial
+	}
+	for _, h := range hours {
+		if ctx.Err() != nil || r.Partial {
 			r.Partial = true
 			break
 		}
@@ -1024,6 +1243,24 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 				continue
 			}
 		}
+		// a whole closed hour counted with words before: its counts are kept (ld_hits.go)
+		keep := keepHour(h)
+		if keep {
+			if x := s.hitsGet(f, h, true, meta[h].Count); x != nil {
+				var b int64
+				if step > 0 {
+					b = h * 3600 / step * step
+				}
+				var m LdMsg
+				for i := range x.sum.rows {
+					row := &x.sum.rows[i]
+					m.Host, m.Prog, m.Src, m.Sev = x.sum.names[row.host], x.sum.names[row.prog], x.sum.names[row.src], row.sev
+					count(&m, row.n, b)
+				}
+				continue
+			}
+		}
+		var mk ldSumMaker
 		s.scanHour(h, f, func(m *LdMsg) bool {
 			r.Scanned++
 			if r.Scanned&0x3fff == 0 && ctx.Err() != nil {
@@ -1038,13 +1275,71 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 				b = (m.T / 1000) / step * step
 			}
 			count(m, 1, b)
+			if keep {
+				mk.add(m)
+			}
 			return true
 		})
 		if r.Partial {
 			break
 		}
+		if keep {
+			if sum := mk.done(meta[h].Count); sum != nil {
+				s.hitsPut(f, h, true, &ldHits{count: meta[h].Count, sum: sum})
+			}
+		}
 	}
 	return r
+}
+
+// countHours counts the matches of whole closed hours by row, several hours at a time, and keeps the counts (ld_hits.go); it
+// gives how many messages it read.
+func (s *ldStore) countHours(ctx context.Context, q LdQuery, hours []int64, meta map[int64]*ldHourMeta) (scanned uint64, partial bool) {
+	var mu sync.Mutex
+	next := 0
+	var wg sync.WaitGroup
+	for w := 0; w < min(ldScanWorkers(), len(hours)); w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			f := q.filter() // a filter is one goroutine's
+			for {
+				mu.Lock()
+				if next >= len(hours) || partial {
+					mu.Unlock()
+					return
+				}
+				h := hours[next]
+				next++
+				mu.Unlock()
+				var mk ldSumMaker
+				var n uint64
+				stopped := false
+				s.scanHour(h, f, func(m *LdMsg) bool {
+					n++
+					if n&0x3fff == 0 && ctx.Err() != nil {
+						stopped = true
+						return false
+					}
+					if f.match(m) {
+						mk.add(m)
+					}
+					return true
+				})
+				if !stopped {
+					if sum := mk.done(meta[h].Count); sum != nil {
+						s.hitsPut(f, h, true, &ldHits{count: meta[h].Count, sum: sum})
+					}
+				}
+				mu.Lock()
+				scanned += n
+				partial = partial || stopped
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	return scanned, partial
 }
 
 // Oldest is the time of the oldest message this node holds (0: none).

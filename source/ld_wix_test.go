@@ -50,13 +50,22 @@ func noWix(t testing.TB, s *ldStore, f func()) {
 	saved := s.wixes
 	s.wixes = map[int64]ldWixEntry{}
 	s.wixMu.Unlock()
+	noHits(s)
 	f()
+	noHits(s)
 	for _, p := range files {
 		os.Rename(p+".off", p)
 	}
 	s.wixMu.Lock()
 	s.wixes = saved
 	s.wixMu.Unlock()
+}
+
+// noHits lets go of what filters found in closed hours (ld_hits.go), so the next search reads the hours.
+func noHits(s *ldStore) {
+	s.hitMu.Lock()
+	s.hits, s.hitBytes = map[ldHitKey]*ldHits{}, 0
+	s.hitMu.Unlock()
 }
 
 func msgKeys(a LdAnswer) string {
@@ -305,5 +314,48 @@ func BenchmarkSearchWords30d(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+// BenchmarkFilter7d: what the Logs page asks for with a filter over 7 days: the newest 1000 messages and the stats (hourly chart,
+// top hosts and programs), nothing in the cache.
+func BenchmarkFilter7d(b *testing.B) {
+	if testing.Short() {
+		b.Skip("slow to set up")
+	}
+	s, now := wordStore(b, b.TempDir(), 7*24, 20000)
+	for _, c := range []struct{ name, q string }{{"rare", "ospf neighbor"}, {"common", "accept"}, {"half", "192.168.1"}, {"field", "dstport=3389"}, {"not", "not accept"}} {
+		q := LdQuery{From: now.Add(-7 * 24 * time.Hour).UnixMilli(), MinSev: -1, Q: c.q, Limit: 1000}
+		b.Run(c.name+"-search", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				s.cache.set(0, 1) // emptied
+				s.cache.set(0, 64)
+				noHits(s)
+				a := s.Search(context.Background(), q)
+				if i == 0 {
+					b.Logf("%d msgs, %d scanned", len(a.Msgs), a.Scanned)
+				}
+			}
+		})
+		b.Run(c.name+"-stats", func(b *testing.B) {
+			for i := 0; i < b.N; i++ {
+				s.cache.set(0, 1) // emptied
+				s.cache.set(0, 64)
+				noHits(s)
+				a := s.Stats(context.Background(), q, 3600)
+				if i == 0 {
+					b.Logf("%d counted, %d scanned", a.Total, a.Scanned)
+				}
+			}
+		})
+		b.Run(c.name+"-refresh", func(b *testing.B) { // the page again 15 s later: the same filter, the open hour read again
+			s.Search(context.Background(), q)
+			s.Stats(context.Background(), q, 3600)
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				s.Search(context.Background(), q)
+				s.Stats(context.Background(), q, 3600)
+			}
+		})
 	}
 }

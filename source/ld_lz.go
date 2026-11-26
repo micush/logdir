@@ -90,8 +90,14 @@ func lzCompress(src []byte) []byte {
 var errLZ = errors.New("flow: damaged compressed block")
 
 // lzDecompress unpacks a block into exactly size bytes; damaged input is an error, never a panic.
-func lzDecompress(src []byte, size int) ([]byte, error) {
-	dst := make([]byte, 0, size)
+func lzDecompress(src []byte, size int) ([]byte, error) { return lzDecompressTo(nil, src, size) }
+
+// lzDecompressTo is lzDecompress into buf's memory when it is big enough (the result then shares it).
+func lzDecompressTo(buf, src []byte, size int) ([]byte, error) {
+	dst := buf[:0]
+	if cap(dst) < size {
+		dst = make([]byte, 0, size)
+	}
 	i := 0
 	getLen := func(v int) (int, bool) {
 		for {
@@ -202,7 +208,30 @@ type ldLzStream struct {
 	br   *bufio.Reader
 	cur  []byte
 	comp []byte
+	out  []byte // the unpacked block (cur is the part of it not read yet)
 	done bool
+}
+
+// ldLzPool keeps streams (with their buffers, about 0.8 MB) between reads: a search over many hours reads one file after another.
+var ldLzPool = sync.Pool{New: func() any { return &ldLzStream{br: bufio.NewReaderSize(nil, 1<<18)} }}
+
+// ldLzGet is ldLzReader from the pool; give it back with ldLzPut once nothing read from it is used any more.
+func ldLzGet(r io.Reader) (*ldLzStream, error) {
+	z := ldLzPool.Get().(*ldLzStream)
+	z.br.Reset(r)
+	z.cur, z.done = nil, false
+	var head [len(ldLzMagic)]byte
+	if _, err := io.ReadFull(z.br, head[:]); err != nil || string(head[:]) != ldLzMagic {
+		ldLzPut(z)
+		return nil, errLZ
+	}
+	return z, nil
+}
+
+func ldLzPut(z *ldLzStream) {
+	z.br.Reset(nil)
+	z.cur = nil
+	ldLzPool.Put(z)
 }
 
 func (z *ldLzStream) Read(p []byte) (int, error) {
@@ -228,12 +257,12 @@ func (z *ldLzStream) Read(p []byte) (int, error) {
 			z.done = true
 			return 0, io.EOF
 		}
-		out, err := lzDecompress(z.comp, raw)
+		out, err := lzDecompressTo(z.out, z.comp, raw)
 		if err != nil || crc32.ChecksumIEEE(out) != sum {
 			z.done = true
 			return 0, io.EOF
 		}
-		z.cur = out
+		z.out, z.cur = out, out
 	}
 	n := copy(p, z.cur)
 	z.cur = z.cur[n:]

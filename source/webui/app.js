@@ -210,14 +210,15 @@
     if (!state.target || LOCAL_API.test(path)) return path;
     return "/api/proxy?node=" + encodeURIComponent(state.target) + "&path=" + encodeURIComponent(path);
   }
-  async function api(method, path, body, local) {
+  // signal: an AbortSignal that drops the request (the daemon then stops working on it); fetch throws an AbortError
+  async function api(method, path, body, local, signal) {
     const orig = path;
     if (!local) path = route(path);
     const headers = {};
     if (body !== undefined) headers["Content-Type"] = "application/json";
     if (state.session && method !== "GET") headers["X-CSRF-Token"] = state.session.csrf;
     const res = await fetch(path, {
-      method, headers, credentials: "same-origin",
+      method, headers, credentials: "same-origin", signal,
       body: body === undefined ? undefined : JSON.stringify(body),
     });
     let data = null;
@@ -473,6 +474,8 @@
   }
 
   function selectTab(id) {
+    const prev = VIEWS[state.tab];
+    if (prev && prev.leave) prev.leave();   // e.g. the Logs page drops a search still running
     state.tab = id;
     if (state.target === CLUSTER && !CLUSTER_TABS.includes(id)) state.target = null;   // the other pages are about one node: back to this one
     if (isGw() && !GW_TABS.includes(id)) state.target = null;
@@ -4552,7 +4555,7 @@
     };
 
     let tiles, chartBox, msgBox, hostBox, qIn, rangeSel, sevSel;
-    let lastAt = 0, seq = 0, senders = [], stats = null, res = null, msgs = [], following = false, followAt = 0, followBusy = false, lastW = 0;
+    let lastAt = 0, seq = 0, inflight = null, inflightKey = "", senders = [], stats = null, res = null, msgs = [], following = false, followAt = 0, followBusy = false, lastW = 0;
 
     const params = (extra) => {
       const p = new URLSearchParams({ range: kept.range });
@@ -4743,11 +4746,19 @@
         hostBox.append(card);
       }
     }
+    // load: the messages, the counts and the senders.  A new load drops the one still running (typing a filter starts one at every
+    // pause; over 30 days each can take seconds, and the daemon stops reading when its request is dropped).
     async function load() {
+      const qs = params({ fields: "1" }).toString(), sq = params({ series: "1", top: "10", ...(kept.field ? { field: kept.field } : {}) }).toString();
+      if (inflight && inflightKey === qs + "&" + sq) return;   // the same again (Enter after the pause already started it): let it finish
       const my = ++seq;
+      if (inflight) inflight.abort();
+      const ctl = inflight = new AbortController();
+      inflightKey = qs + "&" + sq;
       try {
-        const [rep, st, sn] = await Promise.all([api("GET", "/api/logs/search?" + params({ fields: "1" }).toString()),
-          api("GET", "/api/logs/stats?" + params({ series: "1", top: "10", ...(kept.field ? { field: kept.field } : {}) }).toString()), api("GET", "/api/logs/senders")]);
+        const [rep, st, sn] = await Promise.all([api("GET", "/api/logs/search?" + qs, undefined, false, ctl.signal),
+          api("GET", "/api/logs/stats?" + sq, undefined, false, ctl.signal),
+          api("GET", "/api/logs/senders", undefined, false, ctl.signal)]);
         if (my !== seq) return;
         res = rep.data; msgs = res.messages || []; stats = st.data; senders = (sn.data && sn.data.senders) || [];
         if (!!rep.follow !== following) { following = !!rep.follow; followAt = 0; }   // Configure ▸ Settings ▸ Log collector ▸ Follow new messages
@@ -4755,9 +4766,9 @@
         setBad("");
         drawTiles(); drawChart(); drawMessages(); drawTops();
       } catch (e) {
-        if (e.message === "unauthenticated") return;
+        if (e.message === "unauthenticated" || e.name === "AbortError") return;
         setBad(e.message);
-      } finally { /* nothing to re-enable */ }
+      } finally { if (inflight === ctl) inflight = null; }
     }
     // following: what came since the newest message, every couple of seconds
     async function followStep() {
@@ -4802,8 +4813,9 @@
       },
       async poll() {
         if (following) { if (Date.now() - followAt >= FOLLOW_MS) await followStep(); return; }
-        if (Date.now() - lastAt >= REFRESH_MS && document.activeElement !== qIn) await load();
+        if (Date.now() - lastAt >= REFRESH_MS && document.activeElement !== qIn && !inflight) await load();   // never on top of one still running
       },
+      leave() { if (inflight) inflight.abort(); inflight = null; },
     };
   })();
 

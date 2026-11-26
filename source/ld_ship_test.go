@@ -232,6 +232,8 @@ func TestShipSyslogTCP(t *testing.T) {
 	// a new message is sent as it arrives
 	s.addNow("fresh one")
 	shipWait(t, "the new message", 5*time.Second, func() bool { g := sink.got(); return len(g) == 171 && strings.HasSuffix(g[170], "fresh one") })
+	// a batch is counted once its send returns, which can be just after the receiver has it
+	shipWait(t, "171 counted", 5*time.Second, func() bool { st := s.ShipStatus(); return len(st) == 1 && st[0].Sent >= 171 })
 	st := s.ShipStatus()
 	if len(st) != 1 || st[0].State != "ok" || st[0].Sent != 171 || st[0].Target != "tcp://"+sink.ln.Addr().String() {
 		t.Fatalf("status %+v", st)

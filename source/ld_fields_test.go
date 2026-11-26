@@ -200,7 +200,7 @@ func TestFieldLiteralShortcut(t *testing.T) {
 	msgs := []LdMsg{
 		{Msg: `%ASA-2-106001: Inbound TCP connection denied from 198.51.100.7/4444 to 10.0.0.5/80 flags SYN on interface outside`},
 		{Prog: "%ASA-4-106023", Msg: `Deny tcp src outside:1.2.3.4/1 dst inside:5.6.7.8/2 by access-group "X"`},
-		{Msg: `{"user":"bob","x":"a\/b"}`},
+		{Msg: `{"user":"\u0062ob","x":"a\/b"}`},
 		{Msg: `name='it\'s' q="say \"hi\"" k=a\\b`},
 		{Msg: `CEF:0|V|P|1|s|n|5|act=a\=b msg=x\|y`},
 		{Msg: "plain", SD: `[x@1 who="bo\]b" mode="FAST"]`},

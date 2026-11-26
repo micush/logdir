@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
@@ -15,7 +16,7 @@ import (
 // The command line of the log collector:
 //
 //	--logs                                  the collector on every node: what it listens on, counters, the senders
-//	--logs-search "words" [--logs-args "k=v&k=v"]
+//	--logs-search "words" [--logs-args "k=v&k=v"]   (fields=1: each message's fields under it; words may be fields: action=deny dst_port=443)
 //	--logs-ship                             every shipping destination on every node: state, sent, behind, last error
 //	--logs-ship-test NAME [--node N]        send a test message to a destination (from every node, or one)
 //	--logs-ship-reset NAME --logs-ship-from now|oldest|6h [--node N]
@@ -166,6 +167,20 @@ func runLogs(sock string, f *cliFlags) {
 				prog += "[" + m.PID + "]"
 			}
 			fmt.Printf("%s %-7s %s %s: %s\n", t, m.Severity, m.Host, prog, m.Message)
+			if len(m.Fields) > 0 { // --logs-args "fields=1"
+				var b strings.Builder
+				for i, kv := range m.Fields {
+					if i > 0 {
+						b.WriteByte(' ')
+					}
+					v := kv.Val
+					if v == "" || strings.ContainsAny(v, " \t\"") {
+						v = strconv.Quote(v)
+					}
+					b.WriteString(kv.Key + "=" + v)
+				}
+				fmt.Println("    " + b.String())
+			}
 		}
 		fmt.Printf("-- %d message(s) from %d node(s), %s to %s", res.Matched, res.Nodes,
 			time.UnixMilli(res.From).Local().Format("2006-01-02 15:04"), time.UnixMilli(res.To).Local().Format("2006-01-02 15:04"))

@@ -937,3 +937,11 @@ table.shipmon tr.off td { opacity: .55; }
 .shipadv { margin: .5rem 0; }
 .shipadv summary { cursor: pointer; color: var(--muted); }
 .toolbar.right { justify-content: flex-end; flex-wrap: wrap; gap: .5rem; }
+
+/* Logs page: the fields read from a message */
+.qfbtn { margin-left: .6rem; font-size: .8rem; color: var(--muted); white-space: nowrap; }
+tr.qfrow td { padding-top: 0; border-top: 0; }
+.qfchips { display: flex; flex-wrap: wrap; gap: .3rem .4rem; padding: .1rem 0 .4rem; }
+.qchip { font: inherit; font-size: .8rem; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: inherit; padding: .05rem .4rem; cursor: pointer; max-width: 36rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qchip:hover { border-color: var(--accent, #3b82f6); }
+.qchip .qk { color: var(--muted); }

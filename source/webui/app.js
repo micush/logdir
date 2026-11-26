@@ -4530,7 +4530,8 @@
     const SEVS = [["", "Any severity"], ["crit", "Critical or worse"], ["err", "Error or worse"], ["warning", "Warning or worse"], ["warning=", "Warning only"], ["notice", "Notice or worse"], ["info", "Info or worse"]];
     const REFRESH_MS = 15000, FOLLOW_MS = 2000, FOLLOW_KEEP = 2000;
     // what the page keeps when it is left and come back to
-    const kept = { range: "15m", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25 };
+    const kept = { range: "15m", severity: "", host: "", program: "", source: "", q: "", page: 0, size: 25, field: "" };
+    const opened = new Set();   // messages whose fields are shown (by time, sender and text)
     const SEVNAMES = ["emerg", "alert", "crit", "err", "warning", "notice", "info", "debug"];
     const count = (v) => (Number(v) || 0).toLocaleString();
     const niceMax = (v) => {
@@ -4608,6 +4609,20 @@
       if (m.host && m.host !== m.source) return h("button", { type: "button", class: "qlink", title: "Only this host", onclick: () => set({ host: m.host }) }, m.host);
       return m.source_name ? h("button", { type: "button", class: "qlink", title: "Only this sender", onclick: () => set({ source: m.source }) }, m.source_name) : "–";
     }
+    // a field as a search word: name=value, a value with spaces or quotes as a * wildcard (the search splits at spaces)
+    const fieldWord = (f) => f.k + "=" + (String(f.v).replace(/[\s"]+/g, "*") || "*");
+    function addWord(w) { kept.q = (kept.q ? kept.q + " " : "") + w; set({}); }
+    function fieldMenu(f) {
+      return [["Only this value", () => addWord(fieldWord(f))], ["Not this value", () => addWord("not " + fieldWord(f))],
+        ["Top values of " + f.k, () => { kept.field = f.k; set({}); }], "-",
+        ["Copy value", () => { try { navigator.clipboard.writeText(f.v); } catch (_) { /* no clipboard */ } }]];
+    }
+    const msgKey = (m) => m.t + "|" + (m.source || "") + "|" + m.message;
+    function fieldsRow(m, cols) {
+      return h("tr", { class: "qfrow" }, h("td", { colspan: String(cols) }, h("div", { class: "qfchips" },
+        m.fields.map((f) => h("button", { type: "button", class: "qchip", title: "Only this value (right-click for more)", oncontextmenu: rowMenu(fieldMenu(f)), onclick: () => addWord(fieldWord(f)) },
+          h("span", { class: "qk" }, f.k), "=", h("span", { class: "qv mono" }, f.v === "" ? "\u00a0" : f.v))))));
+    }
     function row(m, multi) {
       const prog = m.program ? h("button", { type: "button", class: "qlink", title: "Only this program", onclick: () => set({ program: m.program }) }, m.program, m.pid ? h("span", { class: "muted" }, "[" + m.pid + "]") : null) : null;
       return h("tr", { oncontextmenu: rowMenu(messageMenu(m)), title: m.source ? "Sender " + m.source + (m.source_name ? " (" + m.source_name + ")" : "") : null },
@@ -4616,7 +4631,8 @@
         h("td", {}, hostCell(m)),
         h("td", { class: "mono" }, m.source ? h("button", { type: "button", class: "qlink mono", title: "Only this sender", onclick: () => set({ source: m.source }) }, m.source) : "–"),
         h("td", {}, prog || "–"),
-        h("td", { class: "qmsg" }, m.message),
+        h("td", { class: "qmsg" }, m.message, m.fields && m.fields.length ? h("button", { type: "button", class: "qlink qfbtn", "aria-expanded": String(opened.has(msgKey(m))), title: opened.has(msgKey(m)) ? "Hide the fields" : "Show the fields read from this message",
+          onclick: () => { const k = msgKey(m); if (opened.has(k)) opened.delete(k); else opened.add(k); drawMessages(); } }, m.fields.length + " field" + (m.fields.length === 1 ? "" : "s")) : null),
         multi ? h("td", { class: "mono muted small" }, m.node || "") : null);
     }
     function drawMessages() {
@@ -4642,7 +4658,7 @@
       const body = list.length
         ? h("div", { class: "scroll" }, h("table", { class: "qlogs" },
           h("thead", {}, h("tr", {}, ["Time", "Severity", "Host", "Address", "Program", "Message", multi ? "Node" : null].filter((x) => x != null).map((x) => h("th", {}, x)))),
-          h("tbody", {}, list.map((m) => row(m, multi)))))
+          h("tbody", {}, list.map((m) => opened.has(msgKey(m)) && m.fields && m.fields.length ? [row(m, multi), fieldsRow(m, multi ? 7 : 6)] : row(m, multi)))))
         : h("div", { class: "empty" }, "No message matches in this range.");
       const nodeErr = (r.node_errors || []).length ? h("span", { class: "bad-text small", title: r.node_errors.map((e) => e.node + ": " + e.error).join("\n") }, " " + r.node_errors.length + " of " + r.nodes + " nodes did not answer") : null;
       const note = r.note && !nodeErr ? h("span", { class: "muted small", title: r.note }, "ⓘ") : null;
@@ -4705,24 +4721,33 @@
       clear(chartBox).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, "Messages over time"), h("span", { class: "grow" }), c.csv ? csvButton("Log messages over time", c.csv) : null),
         h("div", { class: "body" }, c.csv ? c.svg : c)));
     }
-    function topCard(title, key, rows, pick) {
+    function topCard(title, key, rows, pick, opt) {
+      opt = opt || {};
       const total = (stats && stats.total) || 0;
       const body = rows && rows.length
-        ? h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, title.replace("Busiest ", "").replace(/^./, (c) => c.toUpperCase())), h("th", { class: "num" }, "Messages"), h("th", { class: "num" }, "Share"))),
+        ? h("div", { class: "scroll" }, h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, opt.col || title.replace("Busiest ", "").replace(/^./, (c) => c.toUpperCase())), h("th", { class: "num" }, "Messages"), h("th", { class: "num" }, "Share"))),
           h("tbody", {}, rows.map((x) => h("tr", {}, h("td", {}, h("button", { type: "button", class: "qlink", title: "Only this " + key, onclick: () => pick(x.name) }, x.name)),
             h("td", { class: "num" }, count(x.count)), h("td", { class: "num" }, total ? (x.count * 100 / total).toFixed(1) + "%" : "–"))))))
         : h("div", { class: "empty" }, "None in this range.");
-      return h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(title)), h("span", { class: "grow" }),
+      return h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, opt.head || tc(title)), h("span", { class: "grow" }),
         rows && rows.length ? csvButton(title, () => [[key, "Messages"], ...rows.map((x) => [x.name, x.count])]) : null), h("div", { class: "body flush" }, body));
     }
     function drawTops() {
       clear(hostBox).append(topCard("Busiest hosts", "host", stats && stats.top_hosts, (n) => set({ host: n })), topCard("Busiest programs", "program", stats && stats.top_programs, (n) => set({ program: n })));
+      if (kept.field && stats) {
+        const card = topCard("Values of " + kept.field, kept.field, stats.top_values, (v) => addWord(fieldWord({ k: kept.field, v })),
+          { col: "Value", head: [tc("Values of") + " ", h("span", { class: "mono" }, kept.field)] });
+        const bar = card.querySelector("header");
+        bar.append(h("button", { type: "button", class: "btn small", title: "Close", "aria-label": "Close the values of " + kept.field, onclick: () => { kept.field = ""; set({}); } }, "×"));
+        if (stats.values > (stats.top_values || []).length) bar.querySelector("h2").append(h("span", { class: "muted small" }, " " + count(stats.values) + " different"));
+        hostBox.append(card);
+      }
     }
     async function load() {
       const my = ++seq;
       try {
-        const [rep, st, sn] = await Promise.all([api("GET", "/api/logs/search?" + params({}).toString()),
-          api("GET", "/api/logs/stats?" + params({ series: "1", top: "10" }).toString()), api("GET", "/api/logs/senders")]);
+        const [rep, st, sn] = await Promise.all([api("GET", "/api/logs/search?" + params({ fields: "1" }).toString()),
+          api("GET", "/api/logs/stats?" + params({ series: "1", top: "10", ...(kept.field ? { field: kept.field } : {}) }).toString()), api("GET", "/api/logs/senders")]);
         if (my !== seq) return;
         res = rep.data; msgs = res.messages || []; stats = st.data; senders = (sn.data && sn.data.senders) || [];
         if (!!rep.follow !== following) { following = !!rep.follow; followAt = 0; }   // Configure ▸ Settings ▸ Log collector ▸ Follow new messages
@@ -4740,7 +4765,7 @@
       followBusy = true; followAt = Date.now();
       try {
         const last = msgs.length ? msgs[msgs.length - 1].t : Date.now() - 60000;
-        const p = new URLSearchParams({ after: String(last), limit: "500" });
+        const p = new URLSearchParams({ after: String(last), limit: "500", fields: "1" });
         for (const k of ["q", "host", "program", "severity"]) if (kept[k]) p.set(k, kept[k]);
         const r = (await api("GET", "/api/logs/tail?" + p.toString())).data;
         if (!following) return;

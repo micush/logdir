@@ -111,7 +111,8 @@ the web GUI):
                    --dnsreg-now   (register now, list the records)    --dnsreg-remove   (take this node's records out of DNS)
   Logs             --logs   (the log collector on every node: what it listens on, counters, the senders)
                    --logs-search "words" [--logs-args "range=1h&host=sw*&program=sshd&severity=err&source=10.0.0.5&limit=200"]
-                                 (a search over every node, merged by time; words: and, or, not or !word)
+                                 (a search over every node, merged by time; words: and, or, not or !word; fields of the
+                                  message: action=deny dst_port=443 bytes>1000000; &fields=1 lists each message's fields)
                    --logs-cat FILE...   (a stored hour, YYYYMMDDHH.jsonl or .jsonl.lz, as plain JSON lines on stdout: logdir --logs-cat 2026112005.jsonl.lz | grep sshd)
   Log shipping     --logs-ship   (every destination on every node: state, sent, how far behind, last error)
                    --logs-ship-test NAME [--node N]   (send a test message to a destination)

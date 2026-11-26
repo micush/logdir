@@ -104,7 +104,7 @@ The endpoint speaks MCP over streamable HTTP with JSON answers (protocol version
 
 | Tool | What it does |
 |---|---|
-| `logs_search` | the messages that match words (`failed password and not root`), a host, a program, a severity (this severe or worse), a sender (an address, or a name with `*` wildcards: `source=sw*.example.com`) and a time range, from every node, merged by time |
+| `logs_search` | the messages that match words (`failed password and not root`), a host, a program, a severity (this severe or worse), a sender (an address, or a name with `*` wildcards: `source=sw*.example.com`) fields (`action=deny`, `dst_port>1024`, `user=adm*`) and a time range, from every node, merged by time |
 | `logs_tail` | the newest messages, or only what came after a time, so you can follow the log |
 | `logs_stats` | how many messages match, by severity, by the busiest hosts and programs, and per interval |
 | `logs_senders` | the senders and when each was last heard from, with the name each address reverse-looks-up to in DNS |
@@ -203,7 +203,7 @@ Point a device's syslog at a gateway address (a VIP, a further address or an any
 
 **What gets accepted.** RFC 5424 and RFC 3164 messages with or without a priority, ISO and BSD timestamps, Cisco sequence numbers and `*Mar  1 18:48:50.483 UTC:` stamps, and PAN-OS CSV bodies. Text that matches none of these is kept whole as the message. TCP and TLS take newline-framed lines and octet-counted frames (RFC 6587), told apart message by message. A message is stored with the time this node received it. Senders' clocks aren't trusted, and receive time is what every node can sort by. The sender's own timestamp is kept beside it when it could be read.
 
-**What gets stored.** One file of JSON lines per hour (UTC), such as `2026112005.jsonl`, appended through a buffer that is written every second and before an update restarts the daemon. A closed hour is compressed (`.jsonl.lz`) and gets a small index beside it listing the hosts, programs and severities it holds, so a search reads only the hours that can hold what it asks for. Retention and the disk cap delete whole hours, oldest first. To read a stored hour outside logdir, `logdir --logs-cat 2026112005.jsonl.lz | grep sshd` writes it as plain JSON lines. It reads the file only, so the daemon needn't be running, and you can give it several files.
+**What gets stored.** One file of JSON lines per hour (UTC), such as `2026112005.jsonl`, appended through a buffer that is written every second and before an update restarts the daemon. A closed hour is compressed (`.jsonl.lz`) and gets a small index beside it listing the hosts, programs and severities it holds, and a word index (`.wix`, a few KB: which three-letter pieces of text the hour holds), so a search reads only the hours that can hold what it asks for, words included. Retention and the disk cap delete whole hours, oldest first. To read a stored hour outside logdir, `logdir --logs-cat 2026112005.jsonl.lz | grep sshd` writes it as plain JSON lines. It reads the file only, so the daemon needn't be running, and you can give it several files.
 
 **In the cluster.** Each message is stored on the node that received it. A search (`/api/logs/search`, `--logs-search`, the Logs page, `logs_search`) asks every node, merges the answers by time and keeps the newest up to the limit. A node that doesn't answer is named (`node_errors`), and what it holds is missing from the answer. A message a sender sent to two nodes is on both and shows up once. Counts (`logs_stats`) add the nodes up, so they count such a message twice.
 
@@ -213,7 +213,7 @@ Point a device's syslog at a gateway address (a VIP, a further address or an any
 
 **Pattern alerts.** Every minute, each node counts the messages it received that match each rule in its window. At `count` or more, the alert `Log pattern matched` opens, with the rule's name as its subject, and it closes when the count falls under. It uses the webhook, repeat and silences of **Configure ▸ Alerts**. Because every node counts its own, a burst that a failover splits between two nodes is counted in two parts.
 
-**Limits.** A search reads the files of the hours in the range, so a very wide range over a busy store takes a while (a node that runs out of time says so). There's no full-text index: words are matched by reading, and only the host, program and severity can rule an hour out beforehand. Vendor message bodies aren't parsed beyond the syslog header. Messages aren't replicated between nodes, so a failed node's disk is the only copy of what it held.
+**Limits.** A search reads the files of the hours in the range, so a very wide range over a busy store takes a while (a node that runs out of time says so). The word index rules out the closed hours that can't hold a word, but a common word is in most hours, and the two newest hours are always read. Fields (`action=deny`, `dst_port=443`) are read from the message when a search runs, not stored: key=value, JSON, CEF, PAN-OS CSV, RFC 5424 structured data, Cisco `%FAC-SEV-MNEMONIC` and the ASA's deny messages; other vendor formats give no fields. Messages aren't replicated between nodes, so a failed node's disk is the only copy of what it held.
 
 ## DNS registration
 

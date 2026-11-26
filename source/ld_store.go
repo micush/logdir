@@ -76,7 +76,8 @@ func (h *ldHourMeta) add(m *LdMsg) {
 // ldFilter is what a search asks of one message.
 type ldFilter struct {
 	expr     matchExpr
-	host     string // lower case; an exact host, or a leading/trailing * wildcard
+	groups   []ldGroup // expr compiled: text and field terms (ld_expr.go)
+	host     string    // lower case; an exact host, or a leading/trailing * wildcard
 	prog     string
 	minSev   int  // -1: any
 	sevExact bool // only this severity, not this severe or worse
@@ -85,6 +86,7 @@ type ldFilter struct {
 	buf      []byte            // scratch for the lower-cased text of the message being matched (a filter is used by one goroutine)
 	hostSrc  map[string]bool   // senders whose name matches the host filter: their messages match it too
 	srcSet   map[string]bool   // senders picked by name: nil is no such filter, an empty set matches nothing
+	wixUse   int8              // the word index can rule hours out: 0 not worked out yet, 1 yes, -1 no
 }
 
 func (f *ldFilter) hostOK(h string) bool { return f.host == "" || ldGlob(f.host, strings.ToLower(h)) }
@@ -144,7 +146,58 @@ func (f *ldFilter) match(m *LdMsg) bool {
 	if len(f.expr) == 0 {
 		return true
 	}
-	// the lower-cased text is built in a buffer the filter keeps, not in two new strings for every message scanned
+	if f.groups == nil {
+		f.groups = ldCompile(f.expr)
+	}
+	// the text and the fields are made when a term needs them, once per message
+	var text string
+	var kv []ldKV
+	haveText, haveKV := false, false
+	for _, g := range f.groups {
+		all := true
+		for i := range g {
+			t := &g[i]
+			var found bool
+			if t.field != nil {
+				if t.field.lit && !haveKV {
+					// the value must be in the text (or the structured data) to be a field: look for it there first, which is far
+					// cheaper than reading the fields (unless the text has \u escapes, which JSON may use for any character)
+					if !haveText {
+						text, haveText = f.matchText(m), true
+					}
+					if !findTerm(text, t.field.val) && !strings.Contains(text, "\\u") && !ldFieldsMadeUp(text) && (m.SD == "" || !findTerm(strings.ToLower(m.SD), t.field.val)) {
+						if t.neg {
+							continue
+						}
+						all = false
+						break
+					}
+				}
+				if !haveKV {
+					kv, haveKV = ldFields(m), true
+				}
+				found = t.field.matches(kv)
+			} else {
+				if !haveText {
+					text, haveText = f.matchText(m), true
+				}
+				found = findTerm(text, t.text)
+			}
+			if found == t.neg {
+				all = false
+				break
+			}
+		}
+		if all {
+			return true
+		}
+	}
+	return false
+}
+
+// matchText is the lower-cased text a search looks in: host, program, message and the sender's names.  It is built in a buffer the
+// filter keeps, not in new strings for every message scanned, so it lives only until the next message.
+func (f *ldFilter) matchText(m *LdMsg) string {
 	buf := appendLower(f.buf[:0], m.Host)
 	buf = append(buf, ' ')
 	buf = appendLower(buf, m.Prog)
@@ -154,8 +207,7 @@ func (f *ldFilter) match(m *LdMsg) bool {
 		buf = append(append(buf, ' '), w...)
 	}
 	f.buf = buf
-	// the string only lives for this call: matches looks in it and keeps nothing
-	return f.expr.matches(unsafe.String(unsafe.SliceData(buf), len(buf)))
+	return unsafe.String(unsafe.SliceData(buf), len(buf))
 }
 
 // hourOK says whether an hour could hold a message the filter wants (false: skip the hour).
@@ -199,7 +251,12 @@ type ldStore struct {
 	sumMu   sync.Mutex
 	sums    map[int64]ldSumEntry // closed hours' rollups (ld_rollup.go), by hour
 	sumMake sync.Mutex
-	dirty   bool
+	// word indexes (ld_wix.go)
+	wixMu    sync.Mutex
+	wixes    map[int64]ldWixEntry
+	wixBytes int
+	wixMake  sync.Mutex
+	dirty    bool
 
 	capPct, retDays int
 	dirBytes        uint64
@@ -210,7 +267,7 @@ type ldStore struct {
 }
 
 func newLdStore(dir, node string) *ldStore {
-	return &ldStore{cache: newLdCache(), sums: map[int64]ldSumEntry{}, dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
+	return &ldStore{cache: newLdCache(), sums: map[int64]ldSumEntry{}, wixes: map[int64]ldWixEntry{}, dir: dir, node: node, meta: map[int64]*ldHourMeta{}, now: time.Now, volSize: ldVolumeSize}
 }
 
 func ldVolumeSize(dir string) (uint64, error) {
@@ -232,7 +289,7 @@ func (s *ldStore) path(h int64, gz bool) string {
 }
 
 func parseHourName(n string) (int64, bool) {
-	n = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(n, ".sum"), ".idx"), ".lz"), ".jsonl")
+	n = strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(strings.TrimSuffix(n, ".wix"), ".sum"), ".idx"), ".lz"), ".jsonl")
 	t, err := time.ParseInLocation("2006010215", n, time.UTC)
 	if err != nil || len(n) != 10 {
 		return 0, false
@@ -260,7 +317,7 @@ func (s *ldStore) Load() {
 	var hours []int64
 	seen := map[int64]bool{}
 	for _, e := range ents {
-		if h, ok := parseHourName(e.Name()); ok && !strings.HasSuffix(e.Name(), ".idx") && !strings.HasSuffix(e.Name(), ".sum") && !seen[h] {
+		if h, ok := parseHourName(e.Name()); ok && !strings.HasSuffix(e.Name(), ".idx") && !strings.HasSuffix(e.Name(), ".sum") && !strings.HasSuffix(e.Name(), ".wix") && !seen[h] {
 			seen[h] = true
 			hours = append(hours, h)
 		}
@@ -586,7 +643,8 @@ func (s *ldStore) compress(h int64) {
 		n := m.Count
 		s.mu.Unlock()
 		if s.closedHour(h) {
-			s.hourSum(h, n) // the rollup, while the hour is fresh in the page cache
+			s.hourSum(h, n)       // the rollup, while the hour is fresh in the page cache
+			s.hourWix(h, n, true) // and the word index
 		}
 	}
 }
@@ -654,6 +712,7 @@ func (s *ldStore) enforce() {
 		s.mu.Unlock()
 		s.cache.drop(f.h)
 		s.dropSum(f.h)
+		s.dropWix(f.h)
 	}
 	for _, f := range list {
 		if f.h == curH {
@@ -693,6 +752,10 @@ type LdQuery struct {
 	srcWords map[string]string
 	Limit    int  `json:"limit"`
 	Oldest   bool `json:"oldest_first,omitempty"` // the oldest matches (default: the newest)
+	// Field: stats count the values of this field (ld_fields.go) of the matching messages, in ByField.
+	Field string `json:"field,omitempty"`
+	// Fields: each message found is listed with its fields.
+	Fields bool `json:"fields,omitempty"`
 }
 
 const (
@@ -717,11 +780,18 @@ func (q *LdQuery) Validate() error {
 	if len(q.Q) > 2000 || len(q.Host) > 255 || len(q.Prog) > 255 {
 		return errors.New("query too long")
 	}
+	if q.Field != "" {
+		q.Field = strings.ToLower(q.Field)
+		if ft, ok := ldParseFieldTerm(q.Field + "=x"); !ok || ft.key != q.Field {
+			return errors.New("field: letters, digits, _ . and - (starting with a letter or _)")
+		}
+	}
 	return nil
 }
 
 func (q *LdQuery) filter() *ldFilter {
-	return &ldFilter{expr: parseMatch(q.Q), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet, hostSrc: q.hostSrc, srcWords: q.srcWords}
+	expr := parseMatch(q.Q)
+	return &ldFilter{expr: expr, groups: ldCompile(expr), host: strings.ToLower(strings.TrimSpace(q.Host)), prog: strings.ToLower(strings.TrimSpace(q.Prog)), minSev: q.MinSev, sevExact: q.SevExact, src: q.Src, srcSet: q.srcSet, hostSrc: q.hostSrc, srcWords: q.srcWords}
 }
 
 // LdAnswer is what one node found.
@@ -767,7 +837,7 @@ func (s *ldStore) Search(ctx context.Context, q LdQuery) LdAnswer {
 			a.Partial = true
 			break
 		}
-		if !f.hourOK(meta[h]) {
+		if !f.hourOK(meta[h]) || !s.wixOK(h, meta[h], f) {
 			continue
 		}
 		var hm []LdMsg
@@ -840,9 +910,13 @@ type LdStatsAnswer struct {
 	BySrc   map[string]uint64           `json:"by_source,omitempty"`       // the address each message came from -> count
 	SrcSer  map[string]map[int64]uint64 `json:"source_series,omitempty"`   // per sender (at most ldSrcSeriesMax of them), as Series
 	SevSer  [3]map[int64]uint64         `json:"severity_series,omitempty"` // info or less severe, warning, error or worse, as Series
+	ByField map[string]uint64           `json:"by_field,omitempty"`        // the values of q.Field -> count (at most ldFieldValuesMax of them)
 	Scanned uint64                      `json:"scanned"`
 	Partial bool                        `json:"partial,omitempty"`
 }
+
+// ldFieldValuesMax is how many different values of a field one node counts (the rest are not counted).
+const ldFieldValuesMax = 5000
 
 // ldSrcSeriesMax is how many senders get a time series of their own in one node's stats (the totals count them all).
 const ldSrcSeriesMax = 500
@@ -861,6 +935,9 @@ func ldSevClass(sev int8) int {
 func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswer {
 	f := q.filter()
 	r := LdStatsAnswer{Node: s.node, ByHost: map[string]uint64{}, ByProg: map[string]uint64{}, Step: step, Series: map[int64]uint64{}, BySrc: map[string]uint64{}}
+	if q.Field != "" {
+		r.ByField = map[string]uint64{}
+	}
 	if step > 0 {
 		r.SrcSer = map[string]map[int64]uint64{}
 		for i := range r.SevSer {
@@ -899,6 +976,14 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 		if len(r.BySrc) < 5000 || r.BySrc[m.Src] > 0 {
 			r.BySrc[m.Src] += n
 		}
+		if q.Field != "" {
+			for _, kv := range ldFields(m) {
+				if kv.Key == q.Field && kv.Val != "" && (len(r.ByField) < ldFieldValuesMax || r.ByField[kv.Val] > 0) {
+					r.ByField[kv.Val] += n
+					break
+				}
+			}
+		}
 		if step > 0 {
 			r.Series[b] += n
 			r.SevSer[ldSevClass(m.Sev)][b] += n
@@ -917,11 +1002,11 @@ func (s *ldStore) Stats(ctx context.Context, q LdQuery, step int64) LdStatsAnswe
 			r.Partial = true
 			break
 		}
-		if !f.hourOK(meta[h]) {
+		if !f.hourOK(meta[h]) || !s.wixOK(h, meta[h], f) {
 			continue
 		}
 		// a whole closed hour, and nothing asked that a rollup cannot answer: add up its rollup instead of reading it
-		if s.closedHour(h) && sumHourOK(f, step, h, q.From, to) {
+		if s.closedHour(h) && q.Field == "" && sumHourOK(f, step, h, q.From, to) {
 			if sum := s.hourSum(h, meta[h].Count); sum != nil {
 				var b int64
 				if step > 0 {

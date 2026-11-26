@@ -60,6 +60,8 @@ func (s *ldService) parseLdQuery(v url.Values) (LdQuery, error) {
 		}
 	}
 	q.Limit, _ = strconv.Atoi(v.Get("limit"))
+	q.Field = strings.TrimSpace(v.Get("field"))
+	q.Fields = v.Get("fields") == "1" || v.Get("fields") == "true"
 	q.Oldest = v.Get("oldest_first") == "1" || v.Get("oldest_first") == "true"
 	now := time.Now()
 	nowMs := now.UnixMilli()
@@ -159,6 +161,7 @@ func (w *WebServer) handleLogTail(rw http.ResponseWriter, r *http.Request, s *se
 	if q.Limit <= 0 {
 		q.Limit = 100
 	}
+	q.Fields = v.Get("fields") == "1" || v.Get("fields") == "true"
 	if after := v.Get("after"); after != "" {
 		t, err := parseLdTime(after)
 		if err != nil {
@@ -306,7 +309,9 @@ func (w *WebServer) handleLogStatus(rw http.ResponseWriter, r *http.Request, s *
 // ── MCP tools ────────────────────────────────────────────────────────────────────────────────────────────────────
 
 var logSearchProps = []mcpProp{
-	{name: "q", typ: "string", desc: "Words to find in the host, program and message, case ignored: `link down`, `denied and 10.1.1.5`, `login or sudo`, `error and not timeout` (also !timeout). Plain words next to each other are one phrase."},
+	{name: "q", typ: "string", desc: "Words to find in the host, program and message, case ignored: `link down`, `denied and 10.1.1.5`, `login or sudo`, `error and not timeout` (also !timeout). Plain words next to each other are one phrase. " +
+		"A word name=value is a field of the message body (key=value pairs, JSON, CEF, PAN-OS CSV, Cisco %FAC-SEV-MNEMONIC, structured data): `action=deny`, `dst_port=443`, `user=ro*`, " +
+		"`bytes>1000000` (> < >= <= need a number), `not action=allow`. Common names work across vendors: src_ip, dst_ip, src_port, dst_port, action, proto, user. fields=true shows what a message has."},
 	{name: "range", typ: "string", desc: "How far back: 15m, 1h (default), 6h, 1d, 7d, 30d, or all (as far back as any node holds). Or give from and to (unix seconds or RFC 3339)."},
 	{name: "from", typ: "string", desc: "Start of the range (instead of range)."},
 	{name: "to", typ: "string", desc: "End of the range, default now."},
@@ -316,6 +321,7 @@ var logSearchProps = []mcpProp{
 	{name: "source", typ: "string", desc: "Only messages received from this sender: its address, or its name (the name on Configure ▸ Senders, the name its address reverse-looks-up to, or the host name its messages give; * wildcards: sw*.example.com)."},
 	{name: "limit", typ: "integer", desc: "How many messages, default 200, at most 5000."},
 	{name: "oldest_first", typ: "string", desc: "true: the oldest matches of the range (default: the newest).", enum: []string{"true", "false"}},
+	{name: "fields", typ: "string", desc: "true: list each message's fields (name and value) with it.", enum: []string{"true", "false"}},
 }
 
 func logQS(c *mcpCtx, extra map[string]string) string {
@@ -325,7 +331,7 @@ func logQS(c *mcpCtx, extra map[string]string) string {
 			v.Set(p.name, s)
 		}
 	}
-	for _, k := range []string{"step", "top", "after"} {
+	for _, k := range []string{"step", "top", "after", "field"} {
 		if s := c.str(k); s != "" {
 			v.Set(k, s)
 		}
@@ -370,7 +376,8 @@ func logMCPTools() []mcpTool {
 			noNode: true,
 			props: append([]mcpProp{
 				{name: "step", typ: "string", desc: "Width of a point in the series: 1m, 5m, 1h ... Absent: no series."},
-				{name: "top", typ: "integer", desc: "How many hosts and programs, default 20."},
+				{name: "top", typ: "integer", desc: "How many hosts and programs (and values of field), default 20."},
+				{name: "field", typ: "string", desc: "Also count the values of this field among the matching messages (top_values): dst_port, action, src_ip, rule … Reads every matching message, so a long range takes longer."},
 			}, logSearchProps[:8]...),
 			run: func(c *mcpCtx) (any, error) {
 				b, err := c.get("/api/logs/stats?" + logQS(c, nil))

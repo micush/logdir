@@ -160,7 +160,7 @@ func (s *ldService) Start() {
 	s.mu.Unlock()
 	s.applyConfig()
 	s.store.Load()
-	go func() { s.store.Warm(); s.store.MakeSums(ctx) }()
+	go func() { s.store.Warm(); s.store.MakeSums(ctx); s.store.MakeWixes(ctx) }()
 	go s.loop(ctx, 3*time.Second, func() { s.reconcile(); s.syncSenders() })
 	go s.loop(ctx, time.Second, s.store.Flush)
 	go s.loop(ctx, time.Minute, func() { s.applyConfig(); s.store.Maintain() })

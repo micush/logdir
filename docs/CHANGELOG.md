@@ -1,5 +1,27 @@
 # Changelog
 
+## [v38] - 2026-11-26 — Logs: fields from message bodies, and a word index for closed hours
+
+### Added
+- **Fields (`ld_fields.go`, `ld_expr.go`).** A message's body is read for fields when a search runs (nothing more is stored, so it works on every hour already kept): key=value (quoted values, `,` or `;` between pairs), JSON (flattened with dots, three levels, arrays skipped), CEF (the header as `cef_vendor`, `cef_product`, `cef_name`… and the extension), PAN-OS CSV (TRAFFIC and THREAT columns by name; other types give serial, type and subtype), RFC 5424 structured data, Cisco `%FAC-SEV-MNEMONIC` (`cisco_facility`, `cisco_severity`, `cisco_mnemonic`) and the ASA's deny messages 106001, 106006, 106007, 106015, 106023 and 106100 (source and destination address, port and interface, `action=deny`). Common names get an alias, so one search covers several formats: `src_ip`, `dst_ip`, `src_port`, `dst_port`, `action`, `proto`, `user` (`src`/`dst` only when the value is an address). At most 80 fields a message, names up to 64 bytes, values up to 512.
+- **Field terms in the search language:** `name=value` (case-insensitive, `*` wildcards), and `>`, `<`, `>=`, `<=` with a number (`dst_port>1024`). They mix with words, `and`, `or` and `not` as before (`action=deny and not dst_port=53`). A field term inside a phrase is split out of it.
+- **Logs page:** each message with fields has an *N fields* button that opens a row of chips; click a chip to add it to the filter, right-click for *Only this value*, *Not this value*, *Top values of …* and *Copy value*. *Top values* adds a **Values of <field>** card to the page with the count of different values and a × to close it. Help ▸ Logs explains fields and the index.
+- **Word index (`ld_wix.go`).** Each closed hour gets a `.wix` file beside it: a bitmap of the three-letter pieces of its text (host, program, message and field values, lower-cased), folded as small as it can stay under 20% full, compressed and checksummed (a few KB an hour). A search with words skips the closed hours whose index says a word can't be there. It is made when an hour is compressed; hours from before this release get theirs by a background pass after start. An index is used only while its count matches the hour's and it was built by this field reader version; a damaged or stale one is ignored and made again. Negated words, numbers, pieces shorter than three letters and words that may match a sender's name never rule an hour out. Retention and the disk cap remove the index with its hour. Up to 64 MB of indexes are kept in memory.
+- **API / CLI / MCP:** `&fields=1` on `/api/logs/search` and `/api/logs/tail` returns each message's fields; `/api/logs/stats?field=NAME` returns its top values (up to 5000 counted). `--logs-search … --logs-args fields=1` prints them under each message. `logs_search` and `logs_tail` take `fields`, `logs_stats` takes `field`, and the `q` description explains field terms.
+
+### Changed
+- `src=` and `source=` on the Logs page still mean the sender (logdir's own filter), so a firewall's source address is `src_ip=`.
+- Stats with a `field` read the hours message by message (rollups don't hold field values).
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- New tests: `ld_fields_test.go` (every format above, hostile and truncated input, a fuzz target, term parsing, searches with fields, top values, and that looking for a field's value in the text first gives exactly what reading every message's fields gives, including the ASA's made-up `action=deny`, JSON `\u` escapes and escaped CEF and key=value values; switching that ASA guard off makes the test fail); `ld_wix_test.go` (the same results with and without the index over many words, no false negatives on random text, the folded size, a damaged or truncated file is not used, a stale index is not used, the index goes with its hour).
+- `BenchmarkSearchWords30d` (30 days of 20,000 messages an hour): a phrase in 72 of the hours, 4.0 s with the index against 47 s without (1.45 M messages read instead of 14.4 M); a word in one hour, 0.13 s.
+- Live, one daemon with a PAM login over HTTPS, 72 hours of 20,000 generated messages written by v37 (no index): v38 made the 72 indexes in about 12 s (288 KB for 41 MB of logs). Over 7 days, `ospf neighbor` 0.35 s cold, 0.07 s warm (v37: 3.75 s and 0.45 s) with the same messages; `sessionid=17000123` 0.51 s warm (v37, as a plain substring: 0.31 s) with the same 72 messages; `dstport=3389` 0.33 s. A first build read every message's fields and took 6.4 s and 3.2 s for those two; the text is now looked at first. In headless Chromium (light and dark): the fields button and chips, filtering by a chip, *Not this value*, the *Values of* card, and `dst_port>1000`. API `dst_port=443` and `/api/logs/stats?field=dst_port`; the CLI with `fields=1`.
+
+### Not verified
+- The formats were checked against sample lines written from vendor documentation, not against real devices. The ASA's connection messages (302013 and the like) give no addresses. Not run on a cluster of several nodes. Fields are read again on every search, so a field search over a busy month is still bounded by reading the hours whose text holds the value.
+
 ## [v37] - 2026-11-26 — Log shipping: send the collected syslog on, without losing where it came from
 
 ### Added

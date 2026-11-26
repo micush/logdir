@@ -198,6 +198,7 @@ type LdView struct {
 	SourceName string `json:"source_name,omitempty"`
 	Via        string `json:"via,omitempty"`
 	Node       string `json:"node,omitempty"`
+	Fields     []ldKV `json:"fields,omitempty"` // what the body reads as (ld_fields.go), when the search asks
 	MsgID      string `json:"msgid,omitempty"`
 	SD         string `json:"structured_data,omitempty"`
 }
@@ -289,7 +290,11 @@ func (s *ldService) result(q LdQuery, parts []LdAnswer, errs []NodeError, n int)
 	msgs, trunc, partial, dups := mergeLdAnswers(parts, q)
 	res := LdResult{From: q.From, To: q.To, Nodes: n, NodeErrors: errs, Truncated: trunc, Partial: partial, Duplicates: dups, Messages: make([]LdView, 0, len(msgs))}
 	for _, m := range msgs {
-		res.Messages = append(res.Messages, ldView(m))
+		v := ldView(m)
+		if q.Fields {
+			v.Fields = ldFields(&m)
+		}
+		res.Messages = append(res.Messages, v)
 	}
 	res.Matched = len(res.Messages)
 	s.nameSources(res.Messages)
@@ -325,6 +330,9 @@ type LdStatsResult struct {
 	SrcSeries  map[string][]uint64 `json:"source_series,omitempty"`   // the busiest senders' counts per bucket, one entry per point of Series
 	SevSeries  map[string][]uint64 `json:"severity_series,omitempty"` // "info", "warning" and "error" counts per bucket, as SrcSeries
 	Heard      []uint64            `json:"heard,omitempty"`           // how many different senders were heard in each bucket (the busiest ldSrcSeriesMax per node)
+	Field      string              `json:"field,omitempty"`           // the field whose values TopValues counts
+	TopValues  []LdCount           `json:"top_values,omitempty"`      // its most frequent values among the matching messages
+	Values     int                 `json:"values,omitempty"`          // how many different values it has (up to 5000 per node are counted)
 	Partial    bool                `json:"partial,omitempty"`
 	Note       string              `json:"note,omitempty"`
 }
@@ -365,6 +373,7 @@ func (s *ldService) Stats(ctx context.Context, q LdQuery, step int64, top int) L
 	res := LdStatsResult{From: q.From, To: q.To, Nodes: n, NodeErrors: errs, BySeverity: map[string]uint64{}, Step: step}
 	hosts, progs, series := map[string]uint64{}, map[string]uint64{}, map[int64]uint64{}
 	srcs, srcSer, sevSer := map[string]uint64{}, map[string]map[int64]uint64{}, [3]map[int64]uint64{{}, {}, {}}
+	vals := map[string]uint64{}
 	for _, r := range reps {
 		if r.Stats == nil {
 			continue
@@ -388,6 +397,9 @@ func (s *ldService) Stats(ctx context.Context, q LdQuery, step int64, top int) L
 		for k, v := range r.Stats.BySrc {
 			srcs[k] += v
 		}
+		for k, v := range r.Stats.ByField {
+			vals[k] += v
+		}
 		for k, m := range r.Stats.SrcSer {
 			if srcSer[k] == nil {
 				srcSer[k] = map[int64]uint64{}
@@ -408,6 +420,9 @@ func (s *ldService) Stats(ctx context.Context, q LdQuery, step int64, top int) L
 		top = 20
 	}
 	res.TopHosts, res.TopProgs = topCounts(hosts, top), topCounts(progs, top)
+	if q.Field != "" {
+		res.Field, res.TopValues, res.Values = q.Field, topCounts(vals, top), len(vals)
+	}
 	if step > 0 {
 		var ts []int64
 		for t := q.From / 1000 / step * step; t <= q.To/1000; t += step {

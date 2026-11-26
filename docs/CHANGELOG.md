@@ -1,5 +1,23 @@
 # Changelog
 
+## [v44] - 2026-11-26 — BGP: AS Prepend from 0 to 8, and BFD on or off
+
+### Changed
+- **AS Prepend is a drop-down from 0 to 8** (Anycast ▸ BGP, was a tick box that prepended three times). **0 (off)** is the default; 1 to 8 add the local AS that many more times to every anycast announcement (`set as-path prepend ASN …` in both outbound route-maps), so several backup nodes can be given an order. Kept as `as_prepend_count` in the node's config, a new key, so a version before v44 that reads it ignores it rather than refusing to load. A config with the old `"as_prepend": true` reads as 3 (what on did) and is written back with the new key only. CLI: `--as-prepend 0-8` (`on` and `off` still work, as 3 and 0); `--bgp` prints the number.
+- `--bgp` and the other BGP commands print the daemon's answer fresh: a setting the answer leaves out (because it is the default) no longer shows the value from before the change.
+
+### Added
+- **BFD: Yes or No**, beside AS Prepend. **Yes** (the default, as before) runs BFD to every neighbor (`neighbor … bfd`); **No** leaves those lines out of `frr.conf`, for a router that does not run BFD. Kept as `bfd_off` only when No, so a config without it has BFD on; v41's old `bfd` key does not turn it off. CLI: `--bfd yes|no`; `--bgp` says *BFD on every neighbor* or *BFD off*.
+- Help ▸ Anycast: both fields, the backup steps and the command line.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./... && go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- New tests: `TestRenderFRRASPrepend` (1, 3 and 8 times in both outbound route-maps, none by default, inbound unchanged); `TestBGPPrependCount` (0 to 8 accepted, -1, 9 and 100 refused, old `as_prepend: true` reads as 3 and is written back as `as_prepend_count`, the new key wins over the old); `TestRenderFRRBFD` (on by default for every neighbor, off leaves no `bfd` line, an old `bfd: false` does not turn it off, the default is not written).
+- Live, a node whose config had `"as_prepend": true`, in headless Chromium (light and dark): AS Prepend showed 3 with 0 (off) and 1–8 to choose from; choosing 5 saved `as_prepend_count: 5` and dropped the old key; BFD showed Yes, choosing No saved `bfd_off: true`; no page errors. CLI: `--as-prepend 8` printed 8, `9` was refused, `off` removed the key; `--bfd no` / `yes` printed *BFD off* / *BFD on every neighbor*, `maybe` was refused.
+
+### Not verified
+- Not run against FRR (not installed here): the route-maps and neighbor lines are checked in the generated `frr.conf` only. FRR's bfdd keeps running with BFD set to No (it serves OSPF too); it just has no BGP sessions.
+
 ## [v43] - 2026-11-26 — Logs at 400 devices: a fast 1-day view, a node that stays within its memory, faster Values
 
 A load test (400 devices: 40 firewalls, 60 routers, 300 switches; 500 messages a second, 43.2 million a day, 2.4 GB on disk) found three problems in v42: over 1 day the counts and chart read every message and stopped at 30 s with part of the total; a node started with a full day grew past its memory limit and was killed; and the Values card counted about 365,000 messages a second, so a day did not finish. Receiving was not a problem: up to 40,000 messages a second from 400 senders were all stored.

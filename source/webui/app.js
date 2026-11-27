@@ -4749,7 +4749,7 @@
       load();
     }
     // ── saved searches (settings.logs.saved, shared): the bookmark lists them and opens one, the disk names what the page shows;
-    // both sit right after the filter box ──
+    // both sit right after the filter box, the bookmark first ──
     const savedOf = () => ({ q: kept.q, range: kept.range, severity: kept.severity, host: kept.host, program: kept.program, source: kept.source,
       field: kept.field, measure: kept.field ? kept.measure : "", over_time: !!(kept.field && kept.over) });
     const sameAs = (x) => { const c = savedOf(); return Object.keys(c).every((k) => (x[k] || (k === "range" ? "1h" : k === "over_time" ? false : "")) === c[k]); };
@@ -4952,7 +4952,7 @@
       const csv = () => [["Time (UTC)", "Severity", "Facility", "Host", "Program", "PID", "Message", "Sender", "Sender DNS name", "Via", "Node"], ...all.map((m) => [m.time, m.severity, m.facility, m.host || "", m.program || "", m.pid || "", m.message, m.source || "", m.source_name || "", m.via || "", m.node || ""])];
       // one line: the filter box gives up width first (22rem down to 9rem), so the count, pages, page size and CSV stay beside it
       clear(msgBox).append(h("div", { class: "card" }, h("header", { class: "bar qmsgbar" }, h("h2", {}, tc(following ? "Messages (following)" : "Messages")), nodeErr, nodeSt, note, h("span", { class: "grow" }),
-        h("span", { class: "qfiltbox" }, qIn), saveBtn, savedBtn, h("span", { class: "grow" }),
+        h("span", { class: "qfiltbox" }, qIn), savedBtn, saveBtn, h("span", { class: "grow" }),
         h("span", { class: "muted small" }, (all.length ? count(from + 1) + "–" + count(from + list.length) + " of " : "") + count(all.length) + (r.truncated && !following ? " newest" : "")), pager, all.length ? sizeSel : null, all.length ? csvButton("Log messages", csv) : null), h("div", { class: "body flush" }, body)));
       if (typingNow) { qIn.focus(); try { qIn.setSelectionRange(at0, at1); } catch (_) { /* not a text box */ } }
     }

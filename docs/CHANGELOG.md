@@ -1,5 +1,17 @@
 # Changelog
 
+## [v46] - 2026-11-26 — Logs: the bookmark before the disk
+
+### Changed
+- Logs ▸ Messages: the two icons after the filter box swapped places: the **bookmark** (saved searches) comes first, then the **disk** (save). Help ▸ Logs says it in that order.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- In one `-race` run of the whole suite `TestClusterLogsHostStrain` failed its first check (a quiet host logs no strain): it reads this machine's own load, which the rest of the suite was raising. Alone with `-race` it passed 5 of 5, and the run without cgo passed; not about this change, still to be made independent of the machine's load.
+
+### Not verified
+- Not opened in a browser: only the order of the two buttons in the header changed (their styles do not depend on it).
+
 ## [v45] - 2026-11-26 — Logs: a search that takes a while says so; save and saved searches beside the filter
 
 ### Added

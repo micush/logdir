@@ -78,7 +78,8 @@ type BGPConfig struct {
 	Neighbors []BGPNeighbor `json:"neighbors"`
 	// ASPrepend is how many more times (0-8; 0 = none) the local AS is added to the AS path of every anycast route this node
 	// announces, so that the routes of nodes that have it are the less preferred ones (a longer path) wherever the rest is equal.
-	// A new key, so a version before v44 that reads this config ignores it instead of refusing a number where it had a bool.
+	// A new key (the old one was a bool); written only when not 0, so a config that does not use it stays readable by
+	// versions before v44, which refuse keys they do not know.
 	ASPrepend int `json:"as_prepend_count,omitempty"`
 	// BFDOff turns BFD off for every neighbor (no `neighbor … bfd` in frr.conf); BFD is on unless it is set.
 	BFDOff bool `json:"bfd_off,omitempty"`

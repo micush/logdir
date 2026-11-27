@@ -17,6 +17,7 @@ import (
 // The error is a *net.DNSError with IsNotFound when a server said there is no such record.
 func reverseNames(ctx context.Context, addr string) ([]string, error) {
 	names, err := net.DefaultResolver.LookupAddr(ctx, addr)
+	names = realNames(names)
 	if len(names) > 0 {
 		return names, nil
 	}
@@ -24,8 +25,8 @@ func reverseNames(ctx context.Context, addr string) ([]string, error) {
 		return nil, err
 	}
 	pg := &net.Resolver{PreferGo: true}
-	if n, e := pg.LookupAddr(ctx, addr); len(n) > 0 {
-		return n, nil
+	if n, e := pg.LookupAddr(ctx, addr); len(realNames(n)) > 0 {
+		return realNames(n), nil
 	} else if err == nil {
 		err = e
 	}
@@ -33,7 +34,7 @@ func reverseNames(ctx context.Context, addr string) ([]string, error) {
 		return nil, err
 	}
 	n, e := rawPTR(ctx, addr, resolvConfServers("/etc/resolv.conf"))
-	if len(n) > 0 {
+	if n = realNames(n); len(n) > 0 {
 		return n, nil
 	}
 	if e != nil {
@@ -256,4 +257,18 @@ func readDNSName(m []byte, off int) (string, int, bool) {
 			off += 1 + l
 		}
 	}
+}
+
+// realNames drops the names systemd-resolved makes up for its own use (_gateway for the host's default gateway, _outbound,
+// _localdnsstub, _localdnsproxy): they say nothing about the sender, and the gateway's real name, if it has one, is in DNS.
+func realNames(names []string) []string {
+	var out []string
+	for _, n := range names {
+		switch strings.ToLower(strings.TrimSuffix(n, ".")) {
+		case "_gateway", "_outbound", "_localdnsstub", "_localdnsproxy":
+			continue
+		}
+		out = append(out, n)
+	}
+	return out
 }

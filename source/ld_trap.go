@@ -475,6 +475,11 @@ var ldTrapNames = map[string]ldTrapName{
 	"1.3.6.1.2.1.105.0.1":      {"pethPsePortOnOffNotification", 5},
 	"1.0.8802.1.1.2.0.0.1":     {"lldpRemTablesChange", 6},
 	"1.3.6.1.4.1.9.9.43.2.0.1": {"ciscoConfigManEvent", 5},
+	"1.3.6.1.4.1.9.9.43.2.0.2": {"ccmCLIRunningConfigChanged", 5},
+	"1.3.6.1.4.1.9.9.43.2.0.3": {"ccmCTIDRolledOver", 6},
+	// OLD-CISCO: ciscoTrap (enterprise 1.3.6.1.4.1.9, sent as v1 or v2c): a reload, and a telnet/SSH session ending (snmp-server enable traps tty)
+	"1.3.6.1.4.1.9.0.0": {"reload", 4},
+	"1.3.6.1.4.1.9.0.1": {"tcpConnectionClose", 6},
 	// CISCO-ENVMON-MIB
 	"1.3.6.1.4.1.9.9.13.3.0.1": {"ciscoEnvMonShutdownNotification", 2},
 	"1.3.6.1.4.1.9.9.13.3.0.2": {"ciscoEnvMonVoltageNotification", 4},
@@ -502,7 +507,9 @@ var ldTrapNames = map[string]ldTrapName{
 type ldTrapObject struct {
 	name  string
 	enum  map[int64]string
-	index string // "ifIndex", "peer" (an IPv4 address index), "neighbor" (ospfNbrTable: an IPv4 address and a number)
+	index string // "ifIndex", "peer" (an IPv4 address index), "neighbor" (ospfNbrTable: an IPv4 address and a number), "line" (a
+	// Cisco tty line), "tcpconn" (tcpConnTable: local address and port, remote address and port, written local= and remote=)
+	ticks bool // hundredths of a second sent as a plain number (Cisco does for some TimeTicks): written 2m3s
 }
 
 var (
@@ -513,6 +520,9 @@ var (
 	enumEnvState = map[int64]string{1: "normal", 2: "warning", 3: "critical", 4: "shutdown", 5: "notPresent", 6: "notFunctioning"}
 	enumCcmCmd   = map[int64]string{1: "commandLine", 2: "snmp"}
 	enumCcmPlace = map[int64]string{1: "erase", 2: "commandSource", 3: "running", 4: "startup", 5: "local", 6: "networkTftp", 7: "networkRcp", 8: "networkFtp", 9: "networkScp"}
+	enumCcmTerm  = map[int64]string{1: "notApplicable", 2: "unknown", 3: "console", 4: "terminal", 5: "virtual", 6: "auxiliary"}
+	enumTCPState = map[int64]string{1: "closed", 2: "listen", 3: "synSent", 4: "synReceived", 5: "established", 6: "finWait1", 7: "finWait2", 8: "closeWait", 9: "lastAck", 10: "closing", 11: "timeWait", 12: "deleteTCB"}
+	enumTsSes    = map[int64]string{1: "unknown", 2: "pad", 3: "stream", 4: "rlogin", 5: "telnet", 6: "tcp", 7: "lat", 8: "mop", 9: "slip", 10: "xremote", 11: "rshell"}
 	enumClogSev  = map[int64]string{1: "emergency", 2: "alert", 3: "critical", 4: "error", 5: "warning", 6: "notice", 7: "info", 8: "debug"}
 )
 
@@ -551,9 +561,26 @@ var ldTrapObjects = map[string]ldTrapObject{
 	"1.3.6.1.2.1.47.1.1.1.1.2": {name: "entPhysicalDescr"},
 	"1.3.6.1.2.1.47.1.1.1.1.7": {name: "entPhysicalName"},
 	// CISCO-CONFIG-MAN-MIB
-	"1.3.6.1.4.1.9.9.43.1.1.6.1.3": {name: "ccmHistoryEventCommandSource", enum: enumCcmCmd},
-	"1.3.6.1.4.1.9.9.43.1.1.6.1.4": {name: "ccmHistoryEventConfigSource", enum: enumCcmPlace},
-	"1.3.6.1.4.1.9.9.43.1.1.6.1.5": {name: "ccmHistoryEventConfigDestination", enum: enumCcmPlace},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.3":  {name: "ccmHistoryEventCommandSource", enum: enumCcmCmd},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.4":  {name: "ccmHistoryEventConfigSource", enum: enumCcmPlace},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.5":  {name: "ccmHistoryEventConfigDestination", enum: enumCcmPlace},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.6":  {name: "ccmHistoryEventTerminalType", enum: enumCcmTerm},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.7":  {name: "ccmHistoryEventTerminalNumber"},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.8":  {name: "ccmHistoryEventTerminalUser"},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.9":  {name: "ccmHistoryEventTerminalLocation"},
+	"1.3.6.1.4.1.9.9.43.1.1.6.1.10": {name: "ccmHistoryEventCommandSourceAddress"},
+	"1.3.6.1.4.1.9.9.43.1.1.1":      {name: "ccmHistoryRunningLastChanged", ticks: true},
+	"1.3.6.1.4.1.9.9.43.1.1.2":      {name: "ccmHistoryRunningLastSaved", ticks: true},
+	"1.3.6.1.4.1.9.9.43.1.1.3":      {name: "ccmHistoryStartupLastChanged", ticks: true},
+	// the session in tcpConnectionClose: OLD-CISCO-TS-MIB, OLD-CISCO-TCP-MIB and TCP-MIB's tcpConnTable
+	"1.3.6.1.4.1.9.2.9.3.1.1":  {name: "tslineSesType", enum: enumTsSes, index: "line"},
+	"1.3.6.1.4.1.9.2.9.2.1.18": {name: "tsLineUser", index: "line"},
+	"1.3.6.1.2.1.6.13.1.1":     {name: "tcpConnState", enum: enumTCPState, index: "tcpconn"},
+	"1.3.6.1.4.1.9.2.6.1.1.1":  {name: "loctcpConnInBytes", index: "tcpconn"},
+	"1.3.6.1.4.1.9.2.6.1.1.2":  {name: "loctcpConnOutBytes", index: "tcpconn"},
+	"1.3.6.1.4.1.9.2.6.1.1.3":  {name: "loctcpConnInPkts", index: "tcpconn"},
+	"1.3.6.1.4.1.9.2.6.1.1.4":  {name: "loctcpConnOutPkts", index: "tcpconn"},
+	"1.3.6.1.4.1.9.2.6.1.1.5":  {name: "loctcpConnElapsed", index: "tcpconn", ticks: true},
 	// CISCO-ENVMON-MIB
 	"1.3.6.1.4.1.9.9.13.1.2.1.2": {name: "ciscoEnvMonVoltageStatusDescr"},
 	"1.3.6.1.4.1.9.9.13.1.2.1.3": {name: "ciscoEnvMonVoltageStatusValue"},
@@ -597,6 +624,9 @@ func trapValue(vb *snmpVarbind, ob *ldTrapObject) string {
 			return "?"
 		}
 		vb.Num = n
+		if ob != nil && ob.ticks && n >= 0 {
+			return trapTicks(uint64(n))
+		}
 		if ob != nil && ob.enum != nil {
 			if s, ok := ob.enum[n]; ok {
 				return s
@@ -625,6 +655,9 @@ func trapValue(vb *snmpVarbind, ob *ldTrapObject) string {
 		n, err := snmpUint(vb.Val)
 		if err != nil {
 			return "?"
+		}
+		if ob != nil && ob.ticks {
+			return trapTicks(n)
 		}
 		return strconv.FormatUint(n, 10)
 	case 0x43: // TimeTicks
@@ -701,18 +734,36 @@ func trapQuote(v string) string {
 }
 
 // trapIndexValue is a table index shown as the field it stands for.
-func trapIndexValue(kind string, idx snmpOID) (string, bool) {
+func trapIndexValue(kind string, idx snmpOID) ([][2]string, bool) {
+	ip4 := func(o snmpOID) (netip.Addr, bool) {
+		if len(o) < 4 || o[0] > 255 || o[1] > 255 || o[2] > 255 || o[3] > 255 {
+			return netip.Addr{}, false
+		}
+		return netip.AddrFrom4([4]byte{byte(o[0]), byte(o[1]), byte(o[2]), byte(o[3])}), true
+	}
 	switch kind {
+	case "line":
+		if len(idx) >= 1 {
+			return [][2]string{{"line", strconv.FormatUint(uint64(idx[0]), 10)}}, true
+		}
+	case "tcpconn": // local address, local port, remote address, remote port
+		if len(idx) == 10 && idx[4] <= 65535 && idx[9] <= 65535 {
+			l, ok1 := ip4(idx[0:4])
+			r, ok2 := ip4(idx[5:9])
+			if ok1 && ok2 {
+				return [][2]string{{"local", netip.AddrPortFrom(l, uint16(idx[4])).String()}, {"remote", netip.AddrPortFrom(r, uint16(idx[9])).String()}}, true
+			}
+		}
 	case "ifIndex":
 		if len(idx) == 1 {
-			return strconv.FormatUint(uint64(idx[0]), 10), true
+			return [][2]string{{kind, strconv.FormatUint(uint64(idx[0]), 10)}}, true
 		}
 	case "peer", "neighbor":
-		if len(idx) >= 4 && idx[0] < 256 && idx[1] < 256 && idx[2] < 256 && idx[3] < 256 {
-			return netip.AddrFrom4([4]byte{byte(idx[0]), byte(idx[1]), byte(idx[2]), byte(idx[3])}).String(), true
+		if a, ok := ip4(idx); ok {
+			return [][2]string{{kind, a.String()}}, true
 		}
 	}
-	return "", false
+	return nil, false
 }
 
 // trapMessage is the trap as the log keeps it: its text and its severity.
@@ -738,9 +789,14 @@ func trapMessage(t *snmpTrap, src netip.Addr) (string, int8) {
 				key += "." + idx.String() // the same object twice (two interfaces): told apart by the index
 			}
 			if ob.index != "" && !used[ob.index] {
-				if v, ok := trapIndexValue(ob.index, idx); ok {
+				if kvs, ok := trapIndexValue(ob.index, idx); ok {
+					for _, kv := range kvs {
+						if !used[kv[0]] {
+							used[kv[0]] = true
+							idxPairs = append(idxPairs, pair{kv[0], kv[1]})
+						}
+					}
 					used[ob.index] = true
-					idxPairs = append(idxPairs, pair{ob.index, v})
 				}
 			}
 		}

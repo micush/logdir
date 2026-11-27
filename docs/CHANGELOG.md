@@ -1,5 +1,28 @@
 # Changelog
 
+## [v48] - 2026-11-26 — SNMP traps: more Cisco names, no "_gateway"
+
+### Added
+- Trap names, from traps a live IOS-XE switch sent to v47:
+  - `ccmCLIRunningConfigChanged` (was `trap=1.3.6.1.4.1.9.9.43.2.0.2`) and `ccmCTIDRolledOver`;
+  - the config-change objects that were `oid_…`: `ccmHistoryEventTerminalUser` (who), `ccmHistoryEventTerminalType` (`virtual`, `console`…), terminal number and location, the source address, and `ccmHistoryRunningLastChanged` / `…LastSaved` / `ccmHistoryStartupLastChanged` as times (`7d10h12m53s`);
+  - `tcpConnectionClose` (a telnet or SSH session ended, `snmp-server enable traps tty`; was `trap=1.3.6.1.4.1.9.0.1`), info: `line=1 local=192.168.255.3:22 remote=192.168.193.29:44422 tslineSesType=tcp tcpConnState=established loctcpConnElapsed=1m35s loctcpConnInBytes=4458 loctcpConnOutBytes=7443 tsLineUser=la`;
+  - `reload` (Cisco), warning.
+- Objects that hold hundredths of a second but are sent as plain numbers are written as times too.
+
+### Fixed
+- **Sender DNS name `_gateway`**: on a host using systemd-resolved, the reverse lookup of the host's default gateway answered `_gateway`, a name systemd-resolved makes up, and the Logs page showed it. It (and `_outbound`, `_localdnsstub`, `_localdnsproxy`) is no longer taken as a name; the other lookups are tried, and the address shows without a name if none has one.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- Three traps made with net-snmp with the OIDs, indexes and values of the switch's (from its CSV export): each decoded to the exact message and severity listed above. The ten v47 traps unchanged.
+- The name filter on `_gateway`, `_outbound.`, mixed case and a real name.
+
+### Not verified
+- Not sent from the switch itself: the types the switch used for the times are inferred from how v47 showed them (plain numbers).
+- The enumerations of `tslineSesType` (OLD-CISCO-TS-MIB) are from memory of the MIB, not checked against the file.
+- FortiGate's own traps (FORTINET-FORTIGATE-MIB) are still `oid_…`.
+
 ## [v47] - 2026-11-26 — SNMP traps into the log
 
 ### Added

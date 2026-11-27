@@ -1,5 +1,28 @@
 # Changelog
 
+## [v45] - 2026-11-26 — Logs: a search that takes a while says so; save and saved searches beside the filter
+
+### Added
+- **Logs: "Searching… N s" next to the menus** (a spinner and the seconds so far) while a load runs longer than 0.7 s; a quicker one shows nothing, so the page does not flicker. The cards it will replace are dimmed (their bodies and the count tiles; the headers and the filter box stay bright, so typing is not dimmed) and marked `aria-busy` until the new answer for each comes in: the messages when the search answers, the tiles, chart and busiest lists when the counts do, the values over time last. A new filter typed while one is still out keeps the counter up and counts from the new one.
+- **A red ✕ beside it stops the search**: the request is dropped (the daemon stops reading), what was shown before stays and the counter says *Stopped* until the next load. Plain red text, a real button underneath (keyboard and screen readers reach it as *Stop search*).
+- The 15-second refresh shows the counter when it is slow but dims nothing (what is shown is still right).
+
+### Changed
+- **Save and the saved searches moved from the top bar to right after the filter box**, as two small grey icons: a **disk** saves what the page shows (the same dialog as before; hidden for read-only users) and a **bookmark** opens the list of saved searches under it, each with what it holds below its name and a ✓ on the one the page shows; the bookmark is filled when the page shows a saved search, and its tooltip names it. The list closes on Esc (back to the bookmark), a click elsewhere, the bookmark again, the window losing focus or changing size, and leaving the page; up and down move through it. Both icons are real buttons (*Save search*, *Saved searches*). The top bar keeps the range and severity.
+- **The Messages header stays on one line**: the filter box is 22rem (was 36rem) and gives up width first, down to 9rem, so the count, the pages, the page size and CSV stay beside it; below a 1085 px window it wraps, as before. "1–25 of 400" and "of 16" no longer break inside themselves. The page size shows just the number (**25**, not *25 per page*; its tooltip says *Messages per page*).
+- Help ▸ Logs: the counter, the ✕, the disk and the bookmark.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- Live, a daemon with a real PAM sign-in and 800 messages over syslog UDP, in headless Chromium (light and dark):
+  - With the search and counts held back 3 s by the browser: nothing shown at 0.3 s; at 1.6 s *Searching… 1 s* with the ✕, five areas dimmed and `aria-busy`; the card bodies and tiles dimmed, the headers and filter box not; the ✕ red with no background or border; all gone when the answer came. A second filter while the first was out: still shown, counting from the new one. ✕: *Stopped*, nothing dimmed. A load without the delay showed nothing. No page errors.
+  - Header on one line at 1086, 1100, 1300, 1440 and 1920 px with the pager and CSV showing, nothing past the card's edge (the filter box 150, 164 and 352 px); wrapped at 1085 and 1060.
+  - The top bar has only the range and severity menus. The bookmark with none saved: *No saved searches*; Esc closed it and put focus back on it. Three searches saved with the disk; the bookmark filled with the saved one on screen; the list sorted, ✓ and focus on the current one, its right edge under the bookmark's; down and Enter opened the next (the filter changed, the list closed). A click elsewhere, the bookmark again and going to another page each closed it.
+
+### Not verified
+- The delay for the counter was made in the browser, not timed against a node with a real day of data.
+- Not tried with a screen reader.
+
 ## [v44] - 2026-11-26 — BGP: AS Prepend from 0 to 8, and BFD on or off
 
 ### Changed

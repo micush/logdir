@@ -946,3 +946,33 @@ tr.qfrow td { padding-top: 0; border-top: 0; }
 .qchip { font: inherit; font-size: .8rem; border: 1px solid var(--border); border-radius: 4px; background: var(--surface); color: inherit; padding: .05rem .4rem; cursor: pointer; max-width: 36rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .qchip:hover { border-color: var(--accent, #3b82f6); }
 .qchip .qk { color: var(--muted); }
+
+/* Logs: a load that runs longer than a moment */
+.qbusy { display: inline-flex; align-items: center; gap: .45rem; color: var(--muted); font-size: .85rem; white-space: nowrap; }
+.qbusy[hidden] { display: none; }
+.qspin { width: .9rem; height: .9rem; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: qspin .8s linear infinite; }
+.qstop { background: none; border: 0; padding: 0 .1rem; margin: 0; color: var(--bad); font: inherit; font-size: 1rem; line-height: 1; cursor: pointer; }
+.qstop:hover { filter: brightness(1.2); }
+.qstop:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.qbusy.stopped .qspin, .qbusy.stopped .qstop { display: none; }
+@keyframes qspin { to { transform: rotate(360deg); } }
+.qstale .card > .body, .qtiles.qstale > * { opacity: .45; transition: opacity .2s; }   /* the results only: the headers and the filter box stay bright */
+@media (prefers-reduced-motion: reduce) { .qspin { animation: none; border-top-color: var(--border); border-color: var(--accent); } .qstale .card > .body, .qtiles.qstale > * { transition: none; } }
+.qsave { display: inline-flex; align-items: center; background: none; border: 0; padding: .2rem; margin: 0; color: var(--muted); cursor: pointer; }
+.qsave:hover { color: var(--text); }
+.qsave:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+.qsave-ico { width: 1.15rem; height: 1.15rem; fill: none; stroke: currentColor; stroke-width: 1.3; stroke-linejoin: round; }
+/* Logs ▸ Messages header: one line; the filter box shrinks first, and only a narrow window lets it wrap */
+.card > header.qmsgbar { flex-wrap: nowrap; }
+.qmsgbar > * { white-space: nowrap; }
+.qmsgbar .qfiltbox { flex: 0 1 22rem; min-width: 9rem; }
+.qmsgbar .qfiltbox .qlogq { width: 100%; flex: 1 1 auto; min-width: 0; }
+.qmsgbar .qsave + .qsave { margin-left: -.15rem; }
+@media (max-width: 1085px) { .card > header.qmsgbar { flex-wrap: wrap; } }
+.qsave.cur .qmark { fill: currentColor; }
+.qsave[aria-expanded="true"] { color: var(--text); }
+.qsaved-menu { max-width: 26rem; max-height: 60vh; overflow-y: auto; }
+.qsaved-menu button { display: flex; flex-direction: column; gap: .1rem; }
+.qsaved-menu button .muted { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 24rem; }
+.qsaved-menu button.cur .qsaved-name { font-weight: 600; }
+.qsaved-none { padding: .45rem .7rem; }

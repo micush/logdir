@@ -4684,7 +4684,37 @@
       return (withDate ? d.getFullYear() + "-" + p2(d.getMonth() + 1) + "-" + p2(d.getDate()) + " " : "") + p2(d.getHours()) + ":" + p2(d.getMinutes()) + ":" + p2(d.getSeconds()) + "." + String(d.getMilliseconds()).padStart(3, "0");
     };
 
-    let tiles, chartBox, msgBox, hostBox, valBox, qIn, rangeSel, sevSel, savedSel, saveBtn;
+    let tiles, chartBox, msgBox, hostBox, valBox, qIn, rangeSel, sevSel, savedBtn, saveBtn, busyEl, busyText, savedMenu;
+    // A load that takes longer than BUSY_MS shows "Searching… N s" with Stop in the toolbar, and what it is replacing is dimmed until
+    // the new answer for that part comes in; a quick one shows nothing, so the page does not flicker.
+    const BUSY_MS = 700;
+    let busyTimer = 0, busyTick = 0, busyFrom = 0;
+    const dimmed = () => [tiles, chartBox, hostBox, valBox, msgBox];
+    function busyStart(auto) {
+      busyFrom = Date.now();
+      if (busyTick) {   // already showing (a new filter while the last was still out): keep it up, count from now
+        if (!auto) for (const b of dimmed()) { b.classList.add("qstale"); b.setAttribute("aria-busy", "true"); }
+        busyText.textContent = "Searching… 0 s";
+        clearInterval(busyTick);
+        busyTick = setInterval(() => { busyText.textContent = "Searching… " + Math.round((Date.now() - busyFrom) / 1000) + " s"; }, 1000);
+        return;
+      }
+      busyEnd();
+      busyTimer = setTimeout(() => {
+        busyEl.hidden = false; busyEl.classList.remove("stopped");
+        if (!auto) for (const b of dimmed()) { b.classList.add("qstale"); b.setAttribute("aria-busy", "true"); }   // a refresh keeps its results bright: they are still right
+        const tick = () => { busyText.textContent = "Searching… " + Math.round((Date.now() - busyFrom) / 1000) + " s"; };
+        tick(); busyTick = setInterval(tick, 1000);
+      }, BUSY_MS);
+    }
+    function busyEnd(stopped) {
+      clearTimeout(busyTimer); clearInterval(busyTick); busyTimer = busyTick = 0;
+      for (const b of dimmed()) if (b) fresh(b);
+      if (!busyEl) return;
+      busyEl.hidden = !stopped;
+      if (stopped) { busyEl.classList.add("stopped"); busyText.textContent = "Stopped"; }
+    }
+    const fresh = (...boxes) => { for (const b of boxes) { b.classList.remove("qstale"); b.removeAttribute("aria-busy"); } };
     let saved = [], valSer = null;   // the saved searches; the values card's lines over time ({ field, names, pts, cols })
     let lastAt = 0, seq = 0, inflight = null, inflightKey = "", senders = [], stats = null, res = null, msgs = [], following = false, followAt = 0, followBusy = false, lastW = 0;
 
@@ -4718,18 +4748,63 @@
       drawSaved();
       load();
     }
-    // ── saved searches (settings.logs.saved, shared): the menu opens one, Save… names what the page shows ──
+    // ── saved searches (settings.logs.saved, shared): the bookmark lists them and opens one, the disk names what the page shows;
+    // both sit right after the filter box ──
     const savedOf = () => ({ q: kept.q, range: kept.range, severity: kept.severity, host: kept.host, program: kept.program, source: kept.source,
       field: kept.field, measure: kept.field ? kept.measure : "", over_time: !!(kept.field && kept.over) });
     const sameAs = (x) => { const c = savedOf(); return Object.keys(c).every((k) => (x[k] || (k === "range" ? "1h" : k === "over_time" ? false : "")) === c[k]); };
     function drawSaved() {
-      if (!savedSel) return;
+      if (!savedBtn) return;
       const cur = saved.find(sameAs);
-      clear(savedSel).append(h("option", { value: "" }, saved.length ? "Saved searches" : "No saved searches"),
-        ...saved.slice().sort((a, b) => a.name.localeCompare(b.name)).map((x) => h("option", { value: x.name, title: savedText(x) }, x.name)));
-      savedSel.value = cur ? cur.name : "";
-      savedSel.disabled = !saved.length;
+      savedBtn.classList.toggle("cur", !!cur);   // a filled bookmark: what the page shows is a saved search
+      savedBtn.title = cur ? "Saved search: " + cur.name : saved.length ? "Saved searches" : "No saved searches";
       if (saveBtn) saveBtn.hidden = !!(state.session && state.session.read_only);
+      if (savedMenu) openSavedMenu();   // open while the list changed: draw it again
+    }
+    // the list under the bookmark: name, and what it holds below it; ✓ on the one the page shows. Esc, a click elsewhere, the
+    // window losing focus or changing size close it; up and down move through it.
+    function closeSavedMenu(refocus) {
+      if (!savedMenu) return;
+      savedMenu.remove(); savedMenu = null;
+      savedBtn.setAttribute("aria-expanded", "false");
+      document.removeEventListener("click", savedMenuClick, true);
+      document.removeEventListener("keydown", savedMenuKey, true);
+      window.removeEventListener("blur", closeSavedMenuNow);
+      window.removeEventListener("resize", closeSavedMenuNow);
+      if (refocus) savedBtn.focus();
+    }
+    const closeSavedMenuNow = () => closeSavedMenu(false);
+    const savedMenuClick = (e) => { if (savedMenu && !savedMenu.contains(e.target) && !savedBtn.contains(e.target)) closeSavedMenu(false); };
+    const savedMenuKey = (e) => {
+      if (e.key === "Escape") { e.preventDefault(); closeSavedMenu(true); return; }
+      if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+      const items = [...savedMenu.querySelectorAll("button")];
+      if (!items.length) return;
+      e.preventDefault();
+      const i = items.indexOf(document.activeElement);
+      items[(i + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length].focus();
+    };
+    function openSavedMenu() {
+      const again = !!savedMenu;
+      if (savedMenu) { savedMenu.remove(); savedMenu = null; }
+      const cur = saved.find(sameAs);
+      const list = saved.slice().sort((a, b) => a.name.localeCompare(b.name));
+      savedMenu = h("div", { class: "cv-menu qsaved-menu", role: "menu", "aria-label": "Saved searches" }, list.length
+        ? list.map((x) => h("button", { type: "button", role: "menuitemradio", "aria-checked": String(x === cur), class: x === cur ? "cur" : "",
+          onclick: () => { closeSavedMenu(true); openSaved(x); } }, h("span", { class: "qsaved-name" }, x === cur ? "✓ " + x.name : x.name), h("span", { class: "muted small" }, savedText(x))))
+        : [h("div", { class: "qsaved-none muted small" }, "No saved searches")]);
+      document.body.append(savedMenu);
+      const br = savedBtn.getBoundingClientRect(), r = savedMenu.getBoundingClientRect();
+      savedMenu.style.left = Math.max(4, Math.min(br.right - r.width, window.innerWidth - r.width - 4)) + "px";   // right edge under the bookmark
+      savedMenu.style.top = (br.bottom + r.height + 6 <= window.innerHeight ? br.bottom + 4 : Math.max(4, br.top - r.height - 4)) + "px";
+      savedBtn.setAttribute("aria-expanded", "true");
+      if (again) return;
+      const first = savedMenu.querySelector("button.cur") || savedMenu.querySelector("button");
+      if (first) first.focus();
+      document.addEventListener("click", savedMenuClick, true);
+      document.addEventListener("keydown", savedMenuKey, true);
+      window.addEventListener("blur", closeSavedMenuNow);
+      window.addEventListener("resize", closeSavedMenuNow);
     }
     function savedText(x) {
       const r = RANGES.find((y) => y[0] === (x.range || "1h")), sv = SEVS.find((y) => y[0] === (x.severity || ""));
@@ -4855,8 +4930,8 @@
       const mkBtn = (label, title, dis, p) => h("button", { type: "button", class: "btn small", title, "aria-label": title, disabled: dis, onclick: go(p) }, label);
       const pageIn = h("input", { type: "number", min: "1", max: String(pageCount), class: "policy-page", "aria-label": "Page number", value: String(kept.page + 1),
         onchange: (e) => { kept.page = (parseInt(e.target.value, 10) || 1) - 1; drawMessages(); } });
-      const sizeSel = h("select", { "aria-label": "Messages per page", onchange: (e) => { kept.size = Number(e.target.value); kept.page = 0; drawMessages(); } },
-        [25, 50, 100, 250, 500].map((n) => h("option", { value: String(n) }, n + " per page")));
+      const sizeSel = h("select", { "aria-label": "Messages per page", title: "Messages per page", onchange: (e) => { kept.size = Number(e.target.value); kept.page = 0; drawMessages(); } },
+        [25, 50, 100, 250, 500].map((n) => h("option", { value: String(n) }, String(n))));   // just the number: the header must stay on one line
       sizeSel.value = String(kept.size);
       const pager = h("span", { class: "policy-pager" }, mkBtn("«", "First page", kept.page === 0, 0), mkBtn("‹", "Previous page", kept.page === 0, kept.page - 1), pageIn, h("span", { class: "muted" }, "of " + pageCount),
         mkBtn("›", "Next page", kept.page >= pageCount - 1, kept.page + 1), mkBtn("»", "Last page", kept.page >= pageCount - 1, pageCount - 1));
@@ -4875,8 +4950,9 @@
         ? h("span", { class: "muted small", role: "status", title: "Still waiting for " + pending.join(", ") }, " " + ((r.nodes || 1) - pending.length) + " of " + (r.nodes || 1) + " nodes…")
         : multi && times.length ? h("span", { class: "muted small", title: times.map((x) => x.node + ": " + count(x.ms) + " ms").join("\n") }, " " + r.nodes + " nodes") : null;
       const csv = () => [["Time (UTC)", "Severity", "Facility", "Host", "Program", "PID", "Message", "Sender", "Sender DNS name", "Via", "Node"], ...all.map((m) => [m.time, m.severity, m.facility, m.host || "", m.program || "", m.pid || "", m.message, m.source || "", m.source_name || "", m.via || "", m.node || ""])];
-      clear(msgBox).append(h("div", { class: "card" }, h("header", { class: "bar" }, h("h2", {}, tc(following ? "Messages (following)" : "Messages")), nodeErr, nodeSt, note, h("span", { class: "grow" }),
-        h("span", { class: "qfiltbox" }, qIn), h("span", { class: "grow" }),
+      // one line: the filter box gives up width first (22rem down to 9rem), so the count, pages, page size and CSV stay beside it
+      clear(msgBox).append(h("div", { class: "card" }, h("header", { class: "bar qmsgbar" }, h("h2", {}, tc(following ? "Messages (following)" : "Messages")), nodeErr, nodeSt, note, h("span", { class: "grow" }),
+        h("span", { class: "qfiltbox" }, qIn), saveBtn, savedBtn, h("span", { class: "grow" }),
         h("span", { class: "muted small" }, (all.length ? count(from + 1) + "–" + count(from + list.length) + " of " : "") + count(all.length) + (r.truncated && !following ? " newest" : "")), pager, all.length ? sizeSel : null, all.length ? csvButton("Log messages", csv) : null), h("div", { class: "body flush" }, body)));
       if (typingNow) { qIn.focus(); try { qIn.setSelectionRange(at0, at1); } catch (_) { /* not a text box */ } }
     }
@@ -5030,17 +5106,19 @@
       const r = await api("GET", "/api/logs/stats?" + p.toString(), undefined, false, signal);
       if (my !== seq) return;
       valSer = { field: kept.field, names, pts: r.data.series || [], cols: r.data.value_series || {} };
+      fresh(valBox);
       drawValues();
     }
     // load: the messages, the counts and the senders.  A new load drops the one still running (typing a filter starts one at every
     // pause; over 30 days each can take seconds, and the daemon stops reading when its request is dropped).
-    async function load() {
+    async function load(auto) {
       const qs = params({ fields: "1" }).toString(), sq = params({ series: "1", top: "10", ...(kept.field ? { field: kept.field } : {}), ...(kept.field && kept.measure ? { measure: kept.measure } : {}) }).toString();
       if (inflight && inflightKey === qs + "&" + sq) return;   // the same again (Enter after the pause already started it): let it finish
       const my = ++seq;
       if (inflight) inflight.abort();
       const ctl = inflight = new AbortController();
       inflightKey = qs + "&" + sq;
+      busyStart(auto);
       // The list and the counts come in parts, one as each node answers (a far node's part a little later): each part is the whole
       // answer so far and is drawn as it comes; the header says which nodes are still out.
       try {
@@ -5048,6 +5126,7 @@
           apiStream("/api/logs/search?" + qs, ctl.signal, (rep) => {
             if (my !== seq) return;
             res = rep.data; msgs = res.messages || [];
+            fresh(msgBox);
             if (rep.done && !!rep.follow !== following) { following = !!rep.follow; followAt = 0; }   // Configure ▸ Settings ▸ Log collector ▸ Follow new messages
             setBad("");
             drawMessages();
@@ -5055,6 +5134,7 @@
           apiStream("/api/logs/stats?" + sq, ctl.signal, (st) => {
             if (my !== seq) return;
             stats = st.data;
+            fresh(tiles, chartBox, hostBox);
             drawTiles(); drawChart(); drawTops(); drawMessages();   // the header's "waiting for" covers both answers
           }),
           api("GET", "/api/logs/senders", undefined, false, ctl.signal).then((sn) => {
@@ -5069,7 +5149,12 @@
       } catch (e) {
         if (e.message === "unauthenticated" || e.name === "AbortError") return;
         setBad(e.message);
-      } finally { if (inflight === ctl) inflight = null; }
+      } finally { if (inflight === ctl) { inflight = null; busyEnd(ctl.stopped); } }
+    }
+    // Stop: drop the load that is running (the daemon stops reading); what was shown before stays, and the next change loads again
+    function stop() {
+      if (!inflight) return;
+      inflight.stopped = true; inflight.abort();
     }
     // following: what came since the newest message, every couple of seconds
     async function followStep() {
@@ -5106,11 +5191,21 @@
         rangeSel.value = kept.range;
         sevSel = h("select", { "aria-label": "Severity", onchange: () => { kept.severity = sevSel.value; kept.page = 0; drawSaved(); load(); } }, SEVS.map(([id, text]) => h("option", { value: id }, text)));
         sevSel.value = kept.severity;
-        savedSel = h("select", { "aria-label": "Saved searches", onchange: () => { const x = saved.find((y) => y.name === savedSel.value); if (x) openSaved(x); } });
-        saveBtn = h("button", { type: "button", class: "btn", title: "Save what the page shows, under a name every user sees", onclick: saveDialog }, "Save…");
+        // a floppy disk, drawn in the text colour
+        const disk = sv("svg", { class: "qsave-ico", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false" },
+          sv("path", { d: "M2.5 1.5h9l3 3v9a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-11a1 1 0 0 1 1-1z" }),
+          sv("path", { d: "M4.5 1.5v4h6v-4" }), sv("rect", { x: "4.5", y: "9", width: "7", height: "5.5", rx: ".5" }));
+        saveBtn = h("button", { type: "button", class: "qsave", title: "Save what the page shows, under a name every user sees", "aria-label": "Save search", onclick: saveDialog }, disk);
+        // a bookmark: the saved searches
+        const mark = sv("svg", { class: "qsave-ico qmark", viewBox: "0 0 16 16", "aria-hidden": "true", focusable: "false" }, sv("path", { d: "M4 2.5h8v11.5l-4-3-4 3z" }));
+        savedBtn = h("button", { type: "button", class: "qsave", "aria-label": "Saved searches", "aria-haspopup": "menu", "aria-expanded": "false",
+          onclick: () => { if (savedMenu) closeSavedMenu(true); else openSavedMenu(); } }, mark);
         tiles = h("div", { class: "qtiles" }); chartBox = h("div", {}); msgBox = h("div", {}); hostBox = h("div", { class: "logtops" }); valBox = h("div", {});
         if (window.ResizeObserver) { let tm = 0; new ResizeObserver(() => { clearTimeout(tm); tm = setTimeout(() => { if (stats && Math.abs(chartBox.clientWidth - lastW) > 24) drawChart(); }, 150); }).observe(chartBox); }
-        const bar = h("div", { class: "toolbar qbar qlogbar" }, rangeSel, sevSel, h("span", { class: "grow" }), savedSel, saveBtn);
+        busyText = h("span", {});
+        busyEl = h("span", { class: "qbusy", role: "status", hidden: true }, h("span", { class: "qspin", "aria-hidden": "true" }), busyText,
+          h("button", { type: "button", class: "qstop", title: "Stop this search; what was shown before stays", "aria-label": "Stop search", onclick: stop }, "✕"));
+        const bar = h("div", { class: "toolbar qbar qlogbar" }, rangeSel, sevSel, busyEl);
         main.append(bar, tiles, h("div", { class: "hosttables flowwide" }, chartBox, msgBox, hostBox, valBox));
         drawSaved();
         drawMessages();   // so the filter box is there even when the first report fails
@@ -5119,9 +5214,9 @@
       },
       async poll() {
         if (following) { if (Date.now() - followAt >= FOLLOW_MS) await followStep(); return; }
-        if (Date.now() - lastAt >= REFRESH_MS && document.activeElement !== qIn && !inflight) await load();   // never on top of one still running
+        if (Date.now() - lastAt >= REFRESH_MS && document.activeElement !== qIn && !inflight) await load(true);   // never on top of one still running
       },
-      leave() { if (inflight) inflight.abort(); inflight = null; },
+      leave() { if (inflight) inflight.abort(); inflight = null; busyEnd(); closeSavedMenu(false); },
     };
   })();
 

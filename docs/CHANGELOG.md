@@ -1,5 +1,35 @@
 # Changelog
 
+## [v47] - 2026-11-26 — SNMP traps into the log
+
+### Added
+- **SNMP traps and informs are collected like syslog.** The collector listens on UDP 162 on the same addresses as syslog (VIPs, further and anycast addresses, the node's own), and only for the senders listed under Configure ▸ Senders; any other source is refused and counted, as for syslog. SNMP v1 and v2c traps and v2c informs are read (v1 converted as RFC 3584 says). **An inform is answered**, from the address it was sent to (a VIP answers as the VIP), so the device stops resending it.
+- A trap is stored as a message from the program `snmptrap`, received via `trap`, written as fields the Logs page already searches, groups and charts: `trap=linkDown ifIndex=3 ifAdminStatus=up ifOperStatus=down ifDescr=GigabitEthernet0/3 uptime=2m3s`. Search them with `program=snmptrap`, `trap=linkDown`, `ifdescr=Gi0/3`; drop rules, pattern alerts and shipping see them like any message.
+- **Names without MIB files**: a built-in table names the SNMPv2 generic traps, IF-MIB, BGP4 (both numberings) and Cisco BGP, OSPF, VRRP, ENTITY, RMON, UPS, PoE, LLDP, Cisco config, environment and syslog (`clogMessageGenerated`) traps, and Juniper chassis traps, with their objects and the values that are numbers on the wire (`ifOperStatus=down`, `bgpPeerState=idle`). An interface, peer or neighbour index is written once in front (`ifIndex=3`, `peer=10.0.0.1`). Anything else is written `oid_<OID>=value`; MAC addresses as `00:11:22:aa:bb:cc`, other bytes as hex, time ticks as `2m3s`.
+- Severity: warning for traps that report a failure or something going down, notice for the rest; a Cisco syslog trap keeps the device's own severity.
+- **Settings ▸ General ▸ Log collector**: *SNMP trap port* (`settings.logs.trap_port`: 162 by default, -1 turns it off, not the syslog UDP port) and *Trap communities* (`settings.logs.trap_communities`: up to 32; empty accepts any community from a listed sender; hidden from MCP callers). A trap or inform with another community is dropped, not answered, and counted.
+- `logdir --logs` counts traps, and on a second line those not read (SNMPv3 or not SNMP) and those with a community not listed. A problem trap is logged once per sender every 10 minutes.
+- Help: Configure: Senders ▸ SNMP traps, and the two fields. README: Log collector ▸ SNMP traps.
+
+### Fixed
+- Settings: saving the page wrote `mem_max_percent: 50` (the default) into the configuration; the page compared it with 70. The README said 70 and "5 points above" for Go's memory limit: it is 50 and 20 points (at most 92 %), as the code and the help say.
+
+### Upgrading
+- **The trap listener is on by default** wherever the collector runs. If snmptrapd (or anything else) holds UDP 162 on a node, that node logs that it cannot listen on trap 162 and the rest works; stop snmptrapd or set another trap port.
+- A version before v47 refuses a configuration that has `trap_port` or `trap_communities`: upgrade every node before setting them.
+- **SNMPv3 is not read yet**: such traps are counted as not read and logged, not stored.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- One run of `CGO_ENABLED=0 go test ./...` failed while a `-race` run had just loaded the machine; its output was cut before the test's name. The next two runs passed. Probably the load-dependent `TestClusterLogsHostStrain` noted in v46, but not confirmed.
+- Unit tests on ten traps net-snmp 5.9.4 sent, captured off the wire (v1 and v2c, generic, BGP, Cisco syslog, an unknown enterprise trap with a MAC, bytes, a counter, an address and an OID value, two interfaces, an inform, SNMPv3, another community): the exact message and severity of each; the Logs page's field reader on the result; every cut-short and every byte changed to 00, 7f, 80 and ff of every trap decoded without a panic; the inform's answer a Response with the same version, community, request id and varbinds.
+- Over real UDP sockets: listed sender kept (program `snmptrap`, via `trap`), another sender refused, another community refused, SNMPv3 counted as not read, the inform answered. On a socket for every address, an inform sent to 127.0.0.53 was answered from 127.0.0.53; with the answer sent without the source address the same test fails (checked).
+- Live: a daemon on port 162 with communities `public` and `n0c`. `snmptrap` v2c and v1 kept; `snmpinform -c public` exited 0 (answered), `-c wrong` timed out; v3 counted; `logdir --logs` showed 4 traps, 1 not read, 1 with another community. In headless Chromium: `program=snmptrap` listed the traps with their fields and severities, `ifdescr=GigabitEthernet0/3` found it; Settings showed the trap port and both communities, and changing the port to 1162 saved it (the communities kept) and the node moved its listener to 1162 at once.
+
+### Not verified
+- Not tried with a real router or switch; the traps were made with net-snmp to match what Cisco and Juniper send.
+- SNMPv3 (to come), and informs over IPv6 (the sandbox has no IPv6; the IPv6 control message is built the same way).
+
 ## [v46] - 2026-11-26 — Logs: the bookmark before the disk
 
 ### Changed

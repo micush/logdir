@@ -2008,6 +2008,8 @@
     { shared: true, k: "udp_port", l: "UDP port", t: "int", min: -1, max: 65535, def: 514, hint: "-1 turns it off." },
     { shared: true, k: "tcp_port", l: "TCP port", t: "int", min: -1, max: 65535, def: 514, hint: "-1 turns it off." },
     { shared: true, k: "tls_port", l: "TLS port", t: "int", min: -1, max: 65535, def: 6514, hint: "-1 turns it off. Uses the GUI certificate." },
+    { shared: true, k: "trap_port", l: "SNMP trap port", t: "int", min: -1, max: 65535, def: 162, hint: "-1 turns it off." },
+    { shared: true, k: "trap_communities", l: "Trap communities", t: "rows", rows: "trapcomm", wide: true },
   ];
   const LLDP_FIELDS = [
     { shared: true, k: "lldp", l: "Run LLDP on every node", t: "bool" },
@@ -2066,7 +2068,7 @@
   // not complete (outlined and not saved), empty: text for no rows}.
   const rowClips = {};
   // the short lists (a handful of rows) have no filter box and no paging; the long ones (clients, domains, users) do
-  const SMALL_TABLES = new Set(["ldapservers", "neighbors", "morevip4", "morevip6", "community", "snmpacl", "metricsacl", "mcpacl"]);
+  const SMALL_TABLES = new Set(["ldapservers", "neighbors", "morevip4", "morevip6", "community", "trapcomm", "snmpacl", "metricsacl", "mcpacl"]);
   // A table cell whose text is cut by its box (an ellipsis) shows the whole text as a tooltip when the pointer reaches it; a cell with a tooltip of its own keeps it.
   function cutTip(e) {
     const td = e.target.closest && e.target.closest("td");
@@ -2314,6 +2316,8 @@
     morevip6: oneCol("morevip6", "IPv6 address", "2001:db8::11", "No more IPv6 addresses."),
     // a community string may contain commas: one string to a row, never split
     community: { ...oneCol("community", "Community string", "", "No community strings: SNMP is off."), format: (c) => [c[0]] },
+    // SNMP traps the collector accepts (settings.logs.trap_communities): none listed, any community from a listed sender
+    trapcomm: { ...oneCol("trapcomm", "Community string", "", "Any community from a listed sender."), format: (c) => [c[0]] },
     // Configure ▸ Senders: one sender to a row (settings.logs.senders): what is allowed to send syslog
     senders: {
       key: "senders", empty: "No senders: no message is accepted.", wide: true,
@@ -3358,7 +3362,8 @@
       const topoShared = () => { const n = topo.get().topology_squares_above; return n > 0 && n !== 36 ? { topology_squares_above: n } : {}; };
       const lg = set.logs || {};
       const logSet = fieldset(COLLECT_FIELDS, { log_dir: cfg.log_dir || "", retention_days: lg.retention_days || 0, dir_max_percent: lg.dir_max_percent || 90, mem_max_percent: lg.mem_max_percent || 50, list_limit: lg.list_limit || 1000, follow: !!lg.follow,
-        udp_port: lg.udp_port || 514, tcp_port: lg.tcp_port || 514, tls_port: lg.tls_port || 6514 });
+        udp_port: lg.udp_port || 514, tcp_port: lg.tcp_port || 514, tls_port: lg.tls_port || 6514,
+        trap_port: lg.trap_port || 162, trap_communities: lg.trap_communities || [] });
       // settings.logs has other fields (enabled, max_line) that this page has no boxes for: they are carried through as they were; the senders, the
       // alerts and the boxes above are written (a port or a cap at its default is not)
       // the folder in use is the value shown, not an empty box: asked of the node being configured (a proxied call when another node is picked)
@@ -3377,12 +3382,13 @@
         const snd = senders.get().senders || [], al = logAlerts.get().logalerts || [], v = logSet.get();
         const num = (x, def) => { x = Math.trunc(Number(x)); return Number.isFinite(x) && x !== def ? x : 0; };
         const dst = ship.get(), drp = drops.get();
-        const { senders: _s, alerts: _a, destinations: _ds, drop_rules: _dr, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, ...rest } = set.logs || {};
+        const { senders: _s, alerts: _a, destinations: _ds, drop_rules: _dr, retention_days: _r, dir_max_percent: _d, mem_max_percent: _m, list_limit: _n, follow: _f, udp_port: _u, tcp_port: _t, tls_port: _l, trap_port: _tp, trap_communities: _tc, ...rest } = set.logs || {};
         const pct = Number(v.dir_max_percent) > 0 && Number(v.dir_max_percent) !== 90 ? Math.min(100, Math.floor(Number(v.dir_max_percent))) : 0;
-        const mpct = Number(v.mem_max_percent) > 0 && Number(v.mem_max_percent) !== 70 ? Math.min(100, Math.floor(Number(v.mem_max_percent))) : 0;
+        const mpct = Number(v.mem_max_percent) > 0 && Number(v.mem_max_percent) !== 50 ? Math.min(100, Math.floor(Number(v.mem_max_percent))) : 0;
         const out = { ...rest, ...(snd.length ? { senders: snd } : {}), ...(al.length ? { alerts: al } : {}), ...(dst.length ? { destinations: dst } : {}), ...(drp.length ? { drop_rules: drp } : {}), ...(num(v.retention_days, 0) > 0 ? { retention_days: num(v.retention_days, 0) } : {}),
           ...(num(v.list_limit, 1000) ? { list_limit: Math.min(5000, Math.max(100, num(v.list_limit, 1000))) } : {}), ...(v.follow ? { follow: true } : {}), ...(pct ? { dir_max_percent: pct } : {}), ...(mpct ? { mem_max_percent: mpct } : {}), ...(num(v.udp_port, 514) ? { udp_port: num(v.udp_port, 514) } : {}), ...(num(v.tcp_port, 514) ? { tcp_port: num(v.tcp_port, 514) } : {}),
-          ...(num(v.tls_port, 6514) ? { tls_port: num(v.tls_port, 6514) } : {}) };
+          ...(num(v.tls_port, 6514) ? { tls_port: num(v.tls_port, 6514) } : {}), ...(num(v.trap_port, 162) ? { trap_port: num(v.trap_port, 162) } : {}),
+          ...((v.trap_communities || []).length ? { trap_communities: v.trap_communities } : {}) };
         return Object.keys(out).length ? { logs: out } : {};
       };
       const priv = privacyForm(set.privacy);

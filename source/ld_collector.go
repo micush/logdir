@@ -42,7 +42,7 @@ const (
 type ldListenKey struct {
 	addr  netip.Addr
 	port  int
-	proto string // udp, tcp, tls
+	proto string // udp, tcp, tls, trap (SNMP traps, over UDP)
 }
 
 func (k ldListenKey) String() string {
@@ -83,14 +83,15 @@ type ldService struct {
 	ship    ldShipper
 	testCfg atomic.Pointer[LogsConfig]
 
-	mu        sync.Mutex
-	udp       map[ldListenKey]net.PacketConn
-	lns       map[ldListenKey]net.Listener
-	failed    map[ldListenKey]string
-	senders   map[netip.Addr]*ldSender
-	refusedAt map[netip.Addr]time.Time
-	cancel    context.CancelFunc
-	conns     map[net.Conn]struct{}
+	mu         sync.Mutex
+	udp        map[ldListenKey]net.PacketConn
+	lns        map[ldListenKey]net.Listener
+	failed     map[ldListenKey]string
+	senders    map[netip.Addr]*ldSender
+	refusedAt  map[netip.Addr]time.Time
+	trapWarnAt map[netip.Addr]time.Time
+	cancel     context.CancelFunc
+	conns      map[net.Conn]struct{}
 
 	expMu   sync.RWMutex
 	expNets []ldSenderNet
@@ -240,7 +241,7 @@ func (s *ldService) wantListen() []ldListenKey {
 		for _, pp := range []struct {
 			proto string
 			port  int
-		}{{"udp", udp}, {"tcp", tcp}, {"tls", tlsp}} {
+		}{{"udp", udp}, {"tcp", tcp}, {"tls", tlsp}, {"trap", cfg.trapPort()}} {
 			k := ldListenKey{a, pp.port, pp.proto}
 			if pp.port > 0 && !seen[k] {
 				seen[k] = true
@@ -293,7 +294,7 @@ func (s *ldService) reconcile() {
 			}
 			s.failed[k] = err.Error()
 		}
-		if k.proto == "udp" {
+		if k.proto == "udp" || k.proto == "trap" {
 			network := "udp4"
 			if k.addr.Is6() {
 				network = "udp6"
@@ -310,7 +311,7 @@ func (s *ldService) reconcile() {
 			delete(s.failed, k)
 			s.udp[k] = pc
 			infof("logs: listening on %s", k)
-			go s.readUDP(pc)
+			go s.readUDP(pc, k.proto)
 			continue
 		}
 		network := "tcp4"
@@ -338,7 +339,7 @@ func (s *ldService) reconcile() {
 	}
 }
 
-func (s *ldService) readUDP(pc net.PacketConn) {
+func (s *ldService) readUDP(pc net.PacketConn, proto string) {
 	u, ok := pc.(*net.UDPConn)
 	if !ok {
 		return
@@ -350,7 +351,70 @@ func (s *ldService) readUDP(pc net.PacketConn) {
 		if err != nil {
 			return // closed
 		}
+		if proto == "trap" {
+			s.handleTrap(u, ap, pktinfoDst(oob[:oobn]), buf[:n], time.Now())
+			continue
+		}
 		s.handle(ap.Addr().Unmap(), pktinfoDst(oob[:oobn]), "udp", buf[:n], time.Now())
+	}
+}
+
+// handleTrap keeps an SNMP trap as a log message (ld_trap.go), and answers an inform.
+func (s *ldService) handleTrap(u *net.UDPConn, from netip.AddrPort, dst netip.Addr, b []byte, now time.Time) {
+	src := from.Addr().Unmap()
+	defer func() {
+		if r := recover(); r != nil {
+			ldStats.dropped.Add(1)
+			errorf("logs: trap decoder panic from %s: %v", src, r)
+		}
+	}()
+	if !s.allowed(src) {
+		ldStats.refused.Add(1)
+		s.noteRefused(src)
+		return
+	}
+	t, err := decodeTrap(b)
+	if err != nil {
+		ldStats.trapUnread.Add(1)
+		s.noteTrapProblem(src, "not read: "+err.Error())
+		return
+	}
+	cfg := s.config()
+	if !cfg.trapCommunityOK(t.Community) {
+		ldStats.trapCommunity.Add(1)
+		s.noteTrapProblem(src, "refused: its community is not one of settings.logs.trap_communities")
+		return
+	}
+	if t.Inform {
+		u.WriteMsgUDPAddrPort(t.informResponse(), pktinfoOOB(dst), from) // a lost answer: the sender sends the inform again
+	}
+	ldStats.received.Add(1)
+	ldStats.bytes.Add(uint64(len(b)))
+	ldStats.traps.Add(1)
+	text, sev := trapMessage(t, src)
+	if ml := cfg.maxLine(); len(text) > ml {
+		text = strings.ToValidUTF8(text[:ml], "")
+	}
+	m := LdMsg{T: now.UnixMilli(), Host: src.String(), Prog: trapProg, Fac: 1, Sev: sev, Msg: text, Src: src.String(), Via: "trap"}
+	if s.dropRule(&m) != "" {
+		s.noteSender(src, dst, "trap", &m, len(b), now)
+		return
+	}
+	s.store.Add(m)
+	ldStats.parsed.Add(1)
+	s.noteSender(src, dst, "trap", &m, len(b), now)
+}
+
+// noteTrapProblem logs, at most once in 10 minutes per sender, why its trap was not kept.
+func (s *ldService) noteTrapProblem(src netip.Addr, why string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if len(s.trapWarnAt) > 1000 || s.trapWarnAt == nil {
+		s.trapWarnAt = map[netip.Addr]time.Time{}
+	}
+	if t, ok := s.trapWarnAt[src]; !ok || time.Since(t) > 10*time.Minute {
+		s.trapWarnAt[src] = time.Now()
+		warnf("logs: SNMP trap from %s %s", src, why)
 	}
 }
 
@@ -764,6 +828,9 @@ type LdNodeStatus struct {
 	UDP        uint64        `json:"udp"`
 	TCP        uint64        `json:"tcp"`
 	TLS        uint64        `json:"tls"`
+	Traps      uint64        `json:"traps"`                     // SNMP traps kept
+	TrapUnread uint64        `json:"traps_unread,omitempty"`    // not read: not a trap, SNMPv3, cut short
+	TrapComm   uint64        `json:"traps_community,omitempty"` // refused for their community
 	Conns      int64         `json:"connections"`
 	Hours      int           `json:"hours"`
 	Stored     uint64        `json:"stored"`
@@ -788,6 +855,7 @@ func (s *ldService) Status() LdNodeStatus {
 	sort.Strings(st.Failed)
 	st.Received, st.Bytes, st.Refused, st.Dropped, st.WriteErrs = ldStats.received.Load(), ldStats.bytes.Load(), ldStats.refused.Load(), ldStats.dropped.Load(), ldStats.writeErrs.Load()
 	st.UDP, st.TCP, st.TLS, st.Conns = ldStats.udp.Load(), ldStats.tcp.Load(), ldStats.tls.Load(), s.nconn.Load()
+	st.Traps, st.TrapUnread, st.TrapComm = ldStats.traps.Load(), ldStats.trapUnread.Load(), ldStats.trapCommunity.Load()
 	s.store.mu.Lock()
 	st.Dir, st.DirError, st.DirBytes, st.DirCap, st.CapRemoved = s.store.dir, s.store.dirErr, s.store.dirBytes, s.store.capBytes, s.store.removed
 	s.store.mu.Unlock()

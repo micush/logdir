@@ -184,22 +184,34 @@ With `settings.lldp` on, every node runs lldpd. The switches then see the nodes,
 
 ## Log collector
 
-Point a device's syslog at a gateway address (a VIP, a further address or an anycast address) and list the device under **Configure ▸ Senders**. The collector listens on UDP 514, TCP 514 and TLS 6514 on every address of the node, so the node's own address works too. A sender pointed at the VIP follows the active gateway: if that node fails, the messages go to the next one, and each node keeps what it received.
+Point a device's syslog at a gateway address (a VIP, a further address or an anycast address) and list the device under **Configure ▸ Senders**. The collector listens on UDP 514, TCP 514 and TLS 6514 on every address of the node, so the node's own address works too. It also takes SNMP traps on UDP 162 (see below). A sender pointed at the VIP follows the active gateway: if that node fails, the messages go to the next one, and each node keeps what it received.
 
 | Setting | Meaning |
 |---|---|
 | `enabled` | listen even with no sender listed (a sender entry also turns it on) |
 | `udp_port`, `tcp_port`, `tls_port` | another port; `-1` turns that listener off |
+| `trap_port` | the UDP port for SNMP traps, 162 by default; `-1` turns it off. It can't be the syslog UDP port |
+| `trap_communities` | the community strings a trap must carry (up to 32); empty accepts any community from a listed sender |
 | `senders` (Configure ▸ Senders) | the senders accepted: a `name` and an `address` (an IPv4 or IPv6 address, a network such as `10.9.0.0/16`, or a host name that DNS resolves, looked up again every minute). `"disabled": true` keeps an entry but refuses it. When entries overlap, the narrowest network wins |
 | `retention_days` (Configure ▸ Settings ▸ General ▸ Log collector ▸ Keep) | delete hours older than this; 0 keeps them until the disk cap removes the oldest |
 | `list_limit` (Configure ▸ Settings ▸ General ▸ Log collector ▸ Messages listed) | how many of the newest matching messages the Logs page lists, 100 to 5000, default 1000. The tiles and chart still count everything in the range |
 | `follow` (Configure ▸ Settings ▸ General ▸ Log collector ▸ Follow new messages) | the Logs page shows new messages as they arrive, every 2 seconds, instead of reloading every 15. Off by default |
-| `mem_max_percent` (… ▸ Memory cap) | cap on the cache of closed hours kept in memory for searches: this percent (default 70) of the machine's memory, or of the container limit when that's smaller, oldest hour first. The hour being written is never cached. Each node applies it to its own memory. Go's own memory limit is set 5 points above this (75% by default, at most 97%), so a large search can't push the process past what the machine allows; `GOMEMLIMIT` overrides it |
+| `mem_max_percent` (… ▸ Memory cap) | cap on the cache of closed hours kept in memory for searches: this percent (default 50) of the machine's memory, or of the container limit when that's smaller, oldest hour first. The hour being written is never cached. Each node applies it to its own memory. Go's own memory limit is set 20 points above this (70% by default, at most 92%), so a large search can't push the process past what the machine allows; `GOMEMLIMIT` overrides it |
 | `dir_max_percent` (… ▸ Disk cap) | cap on the folder: this percent (default 90) of the volume it's on, oldest hour first. Each node applies it to its own volume |
 | `max_line` | longest message kept, in bytes (default 8192); more is cut off |
 | `alerts` (Configure ▸ Senders ▸ Pattern alerts) | `name`, `query`, optional `host` and `min_severity` (0 to 7), `count` (default 1), `window_min` (default 5) and `disabled`; see below |
 | `log_listen` (per node) | when set, listen only on these local addresses and on the gateway addresses this node serves, instead of on every address |
 | `log_dir` (per node; … ▸ Storage folder) | the folder the segments are written to (default `logs` in the state directory); read when the daemon starts |
+
+### SNMP traps
+
+Point a device's trap host at a gateway address. The collector reads SNMP v1 and v2c traps and v2c informs on UDP 162, from listed senders only, and answers each inform from the address it was sent to. A trap is stored as a message from the program `snmptrap`, written as fields the Logs page can search and group:
+
+```
+trap=linkDown ifIndex=3 ifAdminStatus=up ifOperStatus=down ifDescr=GigabitEthernet0/3 uptime=2m3s
+```
+
+Common traps and objects are named without MIB files: the SNMPv2 generic traps, IF-MIB, BGP4 and Cisco BGP, OSPF, VRRP, ENTITY, RMON, UPS, PoE, LLDP, Cisco config, environment and syslog traps, and Juniper chassis traps. Anything else is written `oid_<OID>=value`. Traps that report a failure or something going down are warnings; the rest are notices; a Cisco syslog trap keeps the device's severity. SNMPv3 isn't read yet: such traps are counted (`logdir --logs`) and logged once per sender every 10 minutes. If snmptrapd runs on the host it holds port 162: stop it or set `trap_port`.
 
 **What gets accepted.** RFC 5424 and RFC 3164 messages with or without a priority, ISO and BSD timestamps, Cisco sequence numbers and `*Mar  1 18:48:50.483 UTC:` stamps, and PAN-OS CSV bodies. Text that matches none of these is kept whole as the message. TCP and TLS take newline-framed lines and octet-counted frames (RFC 6587), told apart message by message. A message is stored with the time this node received it. Senders' clocks aren't trusted, and receive time is what every node can sort by. The sender's own timestamp is kept beside it when it could be read.
 

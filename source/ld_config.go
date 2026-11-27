@@ -27,6 +27,11 @@ type LogsConfig struct {
 	UDPPort int `json:"udp_port,omitempty"`
 	TCPPort int `json:"tcp_port,omitempty"`
 	TLSPort int `json:"tls_port,omitempty"`
+	// TrapPort is where SNMP traps are read (ld_trap.go): 0 = the default, 162; -1 = not listened on.
+	TrapPort int `json:"trap_port,omitempty"`
+	// TrapCommunities: when any are listed, a trap is kept only with one of them; none = any community from a listed sender.  Secrets
+	// (hidden from MCP callers).
+	TrapCommunities []string `json:"trap_communities,omitempty"`
 	// Senders are the hosts accepted (everything else is dropped before a byte is parsed): a name and an address.  The address is
 	// an IPv4 or IPv6 address, a network (10.9.0.0/16) or a host name that DNS resolves.
 	Senders []LogSenderCfg `json:"senders,omitempty"`
@@ -80,6 +85,7 @@ func (c *LogsConfig) clone() *LogsConfig {
 	}
 	d := *c
 	d.Senders = append([]LogSenderCfg(nil), c.Senders...)
+	d.TrapCommunities = append([]string(nil), c.TrapCommunities...)
 	d.Alerts = append([]LogAlertCfg(nil), c.Alerts...)
 	d.Saved = append([]LogSavedCfg(nil), c.Saved...)
 	d.Destinations = cloneDests(c.Destinations)
@@ -101,6 +107,30 @@ func (c *LogsConfig) ports() (udp, tcp, tls int) {
 		return defaultSyslogUDP, defaultSyslogTCP, defaultSyslogTLS
 	}
 	return pick(c.UDPPort, defaultSyslogUDP), pick(c.TCPPort, defaultSyslogTCP), pick(c.TLSPort, defaultSyslogTLS)
+}
+
+// trapPort is the port traps are read on; 0 when they are not.
+func (c *LogsConfig) trapPort() int {
+	switch {
+	case c == nil || c.TrapPort == 0:
+		return defaultTrapPort
+	case c.TrapPort < 0:
+		return 0
+	}
+	return c.TrapPort
+}
+
+// trapCommunityOK says whether a trap with this community is kept.
+func (c *LogsConfig) trapCommunityOK(comm string) bool {
+	if c == nil || len(c.TrapCommunities) == 0 {
+		return true
+	}
+	for _, x := range c.TrapCommunities {
+		if x == comm {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *LogsConfig) maxLine() int {
@@ -130,10 +160,26 @@ func (c *LogsConfig) Validate() error {
 	if c == nil {
 		return nil
 	}
-	for _, p := range []int{c.UDPPort, c.TCPPort, c.TLSPort} {
+	for _, p := range []int{c.UDPPort, c.TCPPort, c.TLSPort, c.TrapPort} {
 		if p < -1 || p > 65535 {
 			return fmt.Errorf("logs: port %d is not a port (1 to 65535; -1 = off)", p)
 		}
+	}
+	if udp, _, _ := c.ports(); udp > 0 && udp == c.trapPort() {
+		return fmt.Errorf("logs: the trap port and the syslog UDP port are both %d: give one another port, or -1 to turn it off", udp)
+	}
+	if len(c.TrapCommunities) > 32 {
+		return fmt.Errorf("logs: %d trap communities: at most 32", len(c.TrapCommunities))
+	}
+	seenC := map[string]bool{}
+	for _, cm := range c.TrapCommunities {
+		if cm == "" || len(cm) > 64 || strings.IndexFunc(cm, func(r rune) bool { return r < 0x21 || r == 0x7f }) >= 0 {
+			return fmt.Errorf("logs: a trap community must be 1 to 64 characters, without spaces")
+		}
+		if seenC[cm] {
+			return fmt.Errorf("logs: a trap community is listed twice")
+		}
+		seenC[cm] = true
 	}
 	if c.DirMaxPercent < 0 || c.DirMaxPercent > 100 {
 		return fmt.Errorf("logs: dir_max_percent %d must be 0 to 100", c.DirMaxPercent)

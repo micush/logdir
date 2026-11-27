@@ -38,6 +38,8 @@ var ldStats struct {
 	received, bytes, parsed, refused, dropped, writeErrs atomic.Uint64
 	ruleDropped                                          atomic.Uint64 // by drop rules (ld_drop.go)
 	udp, tcp, tls                                        atomic.Uint64
+	traps                                                atomic.Uint64 // SNMP traps kept (ld_trap.go)
+	trapUnread, trapCommunity                            atomic.Uint64 // not read (bad, SNMPv3, not a trap); refused for their community
 }
 
 type ldHourMeta struct {

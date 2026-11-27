@@ -175,7 +175,7 @@ Shared settings ("settings" block, the same on every node of a cluster):
   mcp_log            true writes every /mcp request and reply to /var/lib/logdir/mcp-content.log (the --state-dir) (default false)
   mcp_log_mb         the most disk that log may use, 1 to 1000 (default 50)
   mcp_log_entry_kb   the most of one request or reply it writes, 1 to 8192 (default 256)
-  logs               the syslog collector: {"enabled", "senders": [{"name", "address", "disabled"}], "udp_port", "tcp_port", "tls_port", "retention_days",
+  logs               the syslog collector: {"enabled", "senders": [{"name", "address", "disabled"}], "udp_port", "tcp_port", "tls_port", "trap_port", "trap_communities", "retention_days",
                      "dir_max_percent", "alerts": [{"name", "query", "count", "window_min"}]}; the address of a sender is an IPv4 or IPv6
                      address, a network (10.9.0.0/16) or a host name; messages from any other sender are refused
   metrics_acl, snmp_communities, snmp_contact, snmp_acl, lldp, alerts, backup, schedule

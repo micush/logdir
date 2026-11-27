@@ -203,8 +203,11 @@ func runLogs(sock string, f *cliFlags) {
 	}
 	decode(op(sock, "logs.status", nil), &out)
 	for _, n := range out.Nodes {
-		fmt.Printf("%s: %s; %d received (%d udp, %d tcp, %d tls), %d refused, %d dropped; %d stored in %d hour(s); %d connection(s)\n",
-			n.Node, map[bool]string{true: "collecting", false: "off"}[n.Enabled], n.Received, n.UDP, n.TCP, n.TLS, n.Refused, n.Dropped, n.Stored, n.Hours, n.Conns)
+		fmt.Printf("%s: %s; %d received (%d udp, %d tcp, %d tls, %d trap), %d refused, %d dropped; %d stored in %d hour(s); %d connection(s)\n",
+			n.Node, map[bool]string{true: "collecting", false: "off"}[n.Enabled], n.Received, n.UDP, n.TCP, n.TLS, n.Traps, n.Refused, n.Dropped, n.Stored, n.Hours, n.Conns)
+		if n.TrapUnread+n.TrapComm > 0 {
+			fmt.Printf("  traps: %d not read (SNMPv3 or not SNMP), %d with a community not listed\n", n.TrapUnread, n.TrapComm)
+		}
 		for _, l := range n.Listening {
 			fmt.Println("    listening on", l)
 		}

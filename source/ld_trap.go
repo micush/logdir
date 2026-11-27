@@ -480,6 +480,10 @@ var ldTrapNames = map[string]ldTrapName{
 	// OLD-CISCO: ciscoTrap (enterprise 1.3.6.1.4.1.9, sent as v1 or v2c): a reload, and a telnet/SSH session ending (snmp-server enable traps tty)
 	"1.3.6.1.4.1.9.0.0": {"reload", 4},
 	"1.3.6.1.4.1.9.0.1": {"tcpConnectionClose", 6},
+	// CISCO-MAC-NOTIFICATION-MIB (snmp-server enable traps mac-notification): a MAC address moved between ports, or a table filled up
+	"1.3.6.1.4.1.9.9.215.2.0.1": {"cmnMacChangedNotification", 5},
+	"1.3.6.1.4.1.9.9.215.2.0.2": {"cmnMacMoveNotification", 5},
+	"1.3.6.1.4.1.9.9.215.2.0.3": {"cmnMacThresholdExceedNotif", 4},
 	// CISCO-ENVMON-MIB
 	"1.3.6.1.4.1.9.9.13.3.0.1": {"ciscoEnvMonShutdownNotification", 2},
 	"1.3.6.1.4.1.9.9.13.3.0.2": {"ciscoEnvMonVoltageNotification", 4},
@@ -581,6 +585,12 @@ var ldTrapObjects = map[string]ldTrapObject{
 	"1.3.6.1.4.1.9.2.6.1.1.3":  {name: "loctcpConnInPkts", index: "tcpconn"},
 	"1.3.6.1.4.1.9.2.6.1.1.4":  {name: "loctcpConnOutPkts", index: "tcpconn"},
 	"1.3.6.1.4.1.9.2.6.1.1.5":  {name: "loctcpConnElapsed", index: "tcpconn", ticks: true},
+	// the move: which address, in which VLAN, from and to which bridge port (dot1dBasePort, not ifIndex), and when
+	"1.3.6.1.4.1.9.9.215.1.3.3": {name: "cmnMacMoveAddress"},
+	"1.3.6.1.4.1.9.9.215.1.3.4": {name: "cmnMacMoveVlanNumber"},
+	"1.3.6.1.4.1.9.9.215.1.3.5": {name: "cmnMacMoveFromPortId"},
+	"1.3.6.1.4.1.9.9.215.1.3.6": {name: "cmnMacMoveToPortId"},
+	"1.3.6.1.4.1.9.9.215.1.3.7": {name: "cmnMacMoveTime", ticks: true},
 	// CISCO-ENVMON-MIB
 	"1.3.6.1.4.1.9.9.13.1.2.1.2": {name: "ciscoEnvMonVoltageStatusDescr"},
 	"1.3.6.1.4.1.9.9.13.1.2.1.3": {name: "ciscoEnvMonVoltageStatusValue"},

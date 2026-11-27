@@ -1,5 +1,19 @@
 # Changelog
 
+## [v49] - 2026-11-26 — SNMP traps: Cisco MAC moves
+
+### Added
+- Names for CISCO-MAC-NOTIFICATION-MIB (`snmp-server enable traps mac-notification`), from a trap a live switch sent to v48:
+  - `cmnMacMoveNotification` (was `trap=1.3.6.1.4.1.9.9.215.2.0.2`), notice: `cmnMacMoveAddress=42:ec:e8:f5:6a:15 cmnMacMoveVlanNumber=193 cmnMacMoveFromPortId=13 cmnMacMoveToPortId=20 cmnMacMoveTime=7d10h34m11s`. The port numbers are bridge ports (`dot1dBasePort`), which on most Catalyst switches are not the ifIndex;
+  - `cmnMacChangedNotification` (notice) and `cmnMacThresholdExceedNotif` (warning), names only: their objects stay `oid_…`.
+
+### Verified
+- gofmt, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64; `node --check` of app.js and help.js.
+- A trap made with net-snmp with the OIDs and values of the switch's decoded to the exact message above; the other thirteen unchanged.
+
+### Not verified
+- Not sent from the switch itself after the change. The objects of the other two MAC traps were left unnamed rather than named from memory.
+
 ## [v48] - 2026-11-26 — SNMP traps: more Cisco names, no "_gateway"
 
 ### Added

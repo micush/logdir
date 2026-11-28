@@ -11,6 +11,9 @@ import (
 	"strings"
 	"text/tabwriter"
 	"time"
+
+	"logdir/internal/core"
+	"logdir/internal/logs"
 )
 
 // The command line of the log collector:
@@ -30,79 +33,79 @@ type ldOpArgs struct {
 
 // LdOpSearch is a search for the CLI, as the daemon builds it.
 func (m *Mgmt) LdOpSearch(a ldOpArgs) (any, error) {
-	if ldSvc == nil {
+	if logs.LdSvc == nil {
 		return nil, fmt.Errorf("no log collector in this process")
 	}
 	v, err := url.ParseQuery(a.Q)
 	if err != nil {
 		return nil, fmt.Errorf("arguments: %v", err)
 	}
-	q, err := ldSvc.parseLdQuery(v)
+	q, err := logs.LdSvc.ParseLdQuery(v)
 	if err != nil {
 		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), ldReportTimeout(q))
+	ctx, cancel := context.WithTimeout(context.Background(), logs.LdReportTimeout(q))
 	defer cancel()
-	return ldSvc.Search(ctx, q), nil
+	return logs.LdSvc.Search(ctx, q), nil
 }
 
 func (m *Mgmt) LdOpStatus() (any, error) {
-	if ldSvc == nil {
+	if logs.LdSvc == nil {
 		return nil, fmt.Errorf("no log collector in this process")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	st, errs := ldSvc.AllStatus(ctx)
-	sn, errs2 := ldSvc.AllSenders(ctx)
+	st, errs := logs.LdSvc.AllStatus(ctx)
+	sn, errs2 := logs.LdSvc.AllSenders(ctx)
 	return map[string]any{"nodes": st, "senders": sn, "node_errors": append(errs, errs2...)}, nil
 }
 
 // LdOpShip is the shipping status for the CLI.
 func (m *Mgmt) LdOpShip() (any, error) {
-	if ldSvc == nil {
+	if logs.LdSvc == nil {
 		return nil, fmt.Errorf("no log collector in this process")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	st, errs, n := ldSvc.AllShipStatus(ctx)
+	st, errs, n := logs.LdSvc.AllShipStatus(ctx)
 	return map[string]any{"destinations": st, "node_errors": errs, "nodes": n}, nil
 }
 
 // LdOpShipDo is a test or a reset from the CLI.
-func (m *Mgmt) LdOpShipDo(kind string, a ldShipOp, actor string) (any, error) {
-	if ldSvc == nil {
+func (m *Mgmt) LdOpShipDo(kind string, a logs.LdShipOp, actor string) (any, error) {
+	if logs.LdSvc == nil {
 		return nil, fmt.Errorf("no log collector in this process")
 	}
 	a.Dest = nil
 	if kind == "shipreset" {
-		if _, err := ldShipStart(a.From, time.Now()); err != nil {
+		if _, err := core.LdShipStart(a.From, time.Now()); err != nil {
 			return nil, err
 		}
 	}
-	if _, ok := ldSvc.destination(a.Name); !ok {
+	if _, ok := logs.LdSvc.Destination(a.Name); !ok {
 		return nil, fmt.Errorf("no destination %q (Configure ▸ Shipping)", a.Name)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Second)
 	defer cancel()
-	res, errs := ldSvc.ShipAll(ctx, kind, a)
-	infof("logs: shipping %s: %s, by %s", a.Name, map[string]string{"shiptest": "test message", "shipreset": "cursor moved to " + firstNonEmpty(a.From, "now")}[kind], actor)
+	res, errs := logs.LdSvc.ShipAll(ctx, kind, a)
+	core.Infof("logs: shipping %s: %s, by %s", a.Name, map[string]string{"shiptest": "test message", "shipreset": "cursor moved to " + core.FirstNonEmpty(a.From, "now")}[kind], actor)
 	return map[string]any{"results": res, "node_errors": errs}, nil
 }
 
 func runLogsShip(sock string, f *cliFlags) {
-	if name := firstNonEmpty(*f.logsShipTest, *f.logsShipReset); name != "" {
+	if name := core.FirstNonEmpty(*f.logsShipTest, *f.logsShipReset); name != "" {
 		kind, from := "logs.shiptest", ""
 		if *f.logsShipReset != "" {
 			kind, from = "logs.shipreset", *f.logsShipFrom
 			if from == "" {
-				fatalf("--logs-ship-reset needs --logs-ship-from now, oldest or a time back (6h, 2d)")
+				core.Fatalf("--logs-ship-reset needs --logs-ship-from now, oldest or a time back (6h, 2d)")
 			}
 		}
 		var out struct {
-			Results    []LdShipResult `json:"results"`
-			NodeErrors []NodeError    `json:"node_errors"`
+			Results    []logs.LdShipResult `json:"results"`
+			NodeErrors []logs.NodeError    `json:"node_errors"`
 		}
-		decode(op(sock, kind, ldShipOp{Name: name, Node: *f.node, From: from}), &out)
+		core.Decode(core.Op(sock, kind, logs.LdShipOp{Name: name, Node: *f.node, From: from}), &out)
 		bad := false
 		for _, r := range out.Results {
 			if r.OK {
@@ -117,7 +120,7 @@ func runLogsShip(sock string, f *cliFlags) {
 			bad = true
 		}
 		if len(out.Results) == 0 && *f.node != "" {
-			fatalf("no node called %s answered", *f.node)
+			core.Fatalf("no node called %s answered", *f.node)
 		}
 		if bad {
 			os.Exit(1)
@@ -125,10 +128,10 @@ func runLogsShip(sock string, f *cliFlags) {
 		return
 	}
 	var out struct {
-		Destinations []LdShipStatus `json:"destinations"`
-		NodeErrors   []NodeError    `json:"node_errors"`
+		Destinations []logs.LdShipStatus `json:"destinations"`
+		NodeErrors   []logs.NodeError    `json:"node_errors"`
 	}
-	decode(op(sock, "logs.ship", nil), &out)
+	core.Decode(core.Op(sock, "logs.ship", nil), &out)
 	if len(out.Destinations) == 0 {
 		fmt.Println("no shipping destinations (Configure ▸ Shipping)")
 	}
@@ -158,8 +161,8 @@ func runLogs(sock string, f *cliFlags) {
 			}
 			q += "q=" + url.QueryEscape(words)
 		}
-		var res LdResult
-		decode(op(sock, "logs.search", ldOpArgs{Q: q}), &res)
+		var res logs.LdResult
+		core.Decode(core.Op(sock, "logs.search", ldOpArgs{Q: q}), &res)
 		for _, m := range res.Messages {
 			t := time.UnixMilli(m.T).Local().Format("2006-01-02 15:04:05")
 			prog := m.Program
@@ -197,11 +200,11 @@ func runLogs(sock string, f *cliFlags) {
 		return
 	}
 	var out struct {
-		Nodes      []LdNodeStatus `json:"nodes"`
-		Senders    []LdSenderInfo `json:"senders"`
-		NodeErrors []NodeError    `json:"node_errors"`
+		Nodes      []logs.LdNodeStatus `json:"nodes"`
+		Senders    []logs.LdSenderInfo `json:"senders"`
+		NodeErrors []logs.NodeError    `json:"node_errors"`
 	}
-	decode(op(sock, "logs.status", nil), &out)
+	core.Decode(core.Op(sock, "logs.status", nil), &out)
 	for _, n := range out.Nodes {
 		fmt.Printf("%s: %s; %d received (%d udp, %d tcp, %d tls, %d trap), %d refused, %d dropped; %d stored in %d hour(s); %d connection(s)\n",
 			n.Node, map[bool]string{true: "collecting", false: "off"}[n.Enabled], n.Received, n.UDP, n.TCP, n.TLS, n.Traps, n.Refused, n.Dropped, n.Stored, n.Hours, n.Conns)
@@ -258,15 +261,15 @@ func runLogsCat(files []string) {
 		fh, err := os.Open(name)
 		if err != nil {
 			out.Flush()
-			fatal(err)
+			core.Fatal(err)
 		}
 		var r io.Reader = fh
 		if strings.HasSuffix(name, ".lz") {
-			zr, err := ldLzReader(fh)
+			zr, err := logs.LdLzReader(fh)
 			if err != nil {
 				fh.Close()
 				out.Flush()
-				fatalf("%s: not a logdir hour file", name)
+				core.Fatalf("%s: not a logdir hour file", name)
 			}
 			r = zr
 		}
@@ -274,7 +277,7 @@ func runLogsCat(files []string) {
 		fh.Close()
 		if err != nil {
 			out.Flush()
-			fatal(err)
+			core.Fatal(err)
 		}
 	}
 }

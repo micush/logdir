@@ -8,15 +8,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+
+	"logdir/internal/core"
 )
 
 // Alerts (Configure ▸ Alerts, Monitor ▸ Alerts).  Every node checks itself every alertTick against a fixed list of rules
@@ -27,177 +27,13 @@ import (
 // shared by the cluster (Settings.Alerts); the alerts, acknowledgements and silences are each node's own, kept in
 // alerts.json in the state directory.
 
-const (
-	alertTick       = 15 * time.Second
-	alertFlapWindow = time.Hour // an alert that comes back within this long is the same alert, counted again
-	alertKeepDays   = 30
-	alertKeepMax    = 1000
-	alertHistLen    = 100
-)
+const alertTick = 15 * time.Second
 
-// AlertsConfig is the "alerts" block of the shared settings.
-type AlertsConfig struct {
-	Webhook     string               `json:"webhook,omitempty"`      // URL that gets a JSON POST for every opened and resolved alert
-	RepeatHours int                  `json:"repeat_hours,omitempty"` // tell again this often while an alert stays open and unacknowledged; 0 = never
-	Rules       map[string]AlertRule `json:"rules,omitempty"`        // by rule id; a rule that is not here, or a field left out, has its default
-}
+const alertFlapWindow = time.Hour
 
-// AlertRule is one rule's settings.  Fields left out take the rule's default.
-type AlertRule struct {
-	Enabled   *bool   `json:"enabled,omitempty"`
-	Severity  string  `json:"severity,omitempty"`    // info, warning, critical
-	Mode      string  `json:"mode,omitempty"`        // up/down rules: in_a_row, minutes or m_of_n
-	After     int     `json:"after,omitempty"`       // in_a_row: checks; minutes: minutes; m_of_n: the M
-	Of        int     `json:"of,omitempty"`          // m_of_n: the N
-	Threshold float64 `json:"threshold,omitempty"`   // value rules
-	ForMin    *int    `json:"for_minutes,omitempty"` // value rules: how long past the threshold
-	ClearMode string  `json:"clear_mode,omitempty"`  // checks (good checks in a row) or minutes
-	Clear     int     `json:"clear,omitempty"`
-}
+const alertKeepDays = 30
 
-// alertDef is a rule of the catalog.
-type alertDef struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title"`
-	Subject  string   `json:"subject"` // what one alert is about: "upstream server", "certificate", ...
-	Kind     string   `json:"kind"`    // updown or value
-	Sev      string   `json:"severity"`
-	On       bool     `json:"on"`              // enabled by default
-	Unit     string   `json:"unit"`            // value rules: the unit of the threshold
-	Below    bool     `json:"below,omitempty"` // value rules: bad when under the threshold
-	Thresh   float64  `json:"threshold,omitempty"`
-	ForMin   int      `json:"for_minutes,omitempty"`
-	DefMode  string   `json:"-"`             // up/down rules: the counting the rule starts with (default in_a_row)
-	DefAfter int      `json:"-"`             // and its number (default 3)
-	Fix      []string `json:"fix,omitempty"` // the actions of the Fix menu
-	Go       string   `json:"go,omitempty"`  // the page "Go to" opens
-}
-
-// ruleView is a rule with every default filled in, for the form and for the checks.
-type ruleView struct {
-	alertDef
-	Enabled   bool    `json:"enabled"`
-	Severity  string  `json:"severity_now"`
-	Mode      string  `json:"mode"`
-	After     int     `json:"after"`
-	Of        int     `json:"of"`
-	Threshold float64 `json:"threshold_now"`
-	ForMinNow int     `json:"for_minutes_now"`
-	ClearMode string  `json:"clear_mode"`
-	Clear     int     `json:"clear"`
-}
-
-var alertSeverities = []string{"info", "warning", "critical"}
-
-func (c *AlertsConfig) rule(d alertDef) ruleView {
-	r := AlertRule{}
-	if c != nil {
-		r = c.Rules[d.ID]
-	}
-	v := ruleView{alertDef: d, Enabled: d.On, Severity: d.Sev, Threshold: d.Thresh, ForMinNow: d.ForMin}
-	if r.Enabled != nil {
-		v.Enabled = *r.Enabled
-	}
-	if r.Severity != "" {
-		v.Severity = r.Severity
-	}
-	if d.Kind == "updown" {
-		v.Mode, v.After, v.Of = "in_a_row", 3, 5
-		if d.DefMode != "" {
-			v.Mode, v.After = d.DefMode, d.DefAfter
-		}
-		if r.Mode != "" {
-			v.Mode = r.Mode
-		}
-		if r.After > 0 {
-			v.After = r.After
-		}
-		if r.Of > 0 {
-			v.Of = r.Of
-		}
-		v.ClearMode, v.Clear = "checks", 2
-	} else {
-		if r.Threshold != 0 {
-			v.Threshold = r.Threshold
-		}
-		if r.ForMin != nil {
-			v.ForMinNow = *r.ForMin
-		}
-		v.ClearMode, v.Clear = "minutes", 5
-	}
-	if r.ClearMode != "" {
-		v.ClearMode = r.ClearMode
-	}
-	if r.Clear > 0 {
-		v.Clear = r.Clear
-	}
-	return v
-}
-
-// Validate checks the block and tidies it.
-func (c *AlertsConfig) Validate() error {
-	c.Webhook = strings.TrimSpace(c.Webhook)
-	if c.Webhook != "" {
-		u, err := url.Parse(c.Webhook)
-		if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return errors.New("alerts: the webhook must be an http:// or https:// address")
-		}
-		if len(c.Webhook) > 2000 {
-			return errors.New("alerts: the webhook address is too long")
-		}
-	}
-	if c.RepeatHours < 0 || c.RepeatHours > 24*30 {
-		return errors.New("alerts: repeat_hours is 0 (never) to 720")
-	}
-	for id, r := range c.Rules {
-		def, ok := alertDefByID(id)
-		if !ok {
-			return fmt.Errorf("alerts: there is no rule %q", id)
-		}
-		if r.Severity != "" && !containsStr(alertSeverities, r.Severity) {
-			return fmt.Errorf("alerts: %s: severity is info, warning or critical", id)
-		}
-		if r.Mode != "" && r.Mode != "in_a_row" && r.Mode != "minutes" && r.Mode != "m_of_n" {
-			return fmt.Errorf("alerts: %s: mode is in_a_row, minutes or m_of_n", id)
-		}
-		if r.ClearMode != "" && r.ClearMode != "checks" && r.ClearMode != "minutes" {
-			return fmt.Errorf("alerts: %s: clear_mode is checks or minutes", id)
-		}
-		if r.After < 0 || r.After > 100000 || r.Of < 0 || r.Of > alertHistLen || r.Clear < 0 || r.Clear > 100000 {
-			return fmt.Errorf("alerts: %s: a count is out of range (of is at most %d)", id, alertHistLen)
-		}
-		if r.Mode == "m_of_n" {
-			v := c.rule(def)
-			if v.After > v.Of {
-				return fmt.Errorf("alerts: %s: %d failures out of the last %d checks is not possible", id, v.After, v.Of)
-			}
-		}
-		if math.IsNaN(r.Threshold) || math.IsInf(r.Threshold, 0) || r.Threshold < 0 {
-			return fmt.Errorf("alerts: %s: the threshold is a number of 0 or more", id)
-		}
-		if r.ForMin != nil && (*r.ForMin < 0 || *r.ForMin > 10080) {
-			return fmt.Errorf("alerts: %s: for_minutes is 0 to 10080", id)
-		}
-	}
-	if len(c.Rules) == 0 {
-		c.Rules = nil
-	}
-	return nil
-}
-
-func (c *AlertsConfig) clone() *AlertsConfig {
-	if c == nil {
-		return nil
-	}
-	n := *c
-	if c.Rules != nil {
-		n.Rules = make(map[string]AlertRule, len(c.Rules))
-		for k, v := range c.Rules {
-			n.Rules[k] = v
-		}
-	}
-	return &n
-}
+const alertKeepMax = 1000
 
 // ── alerts and silences ──────────────────────────────────────────────────────
 
@@ -238,12 +74,6 @@ func (s Silence) matches(a *Alert) bool {
 	return (s.Rule == "" || s.Rule == a.Rule) && (s.Subject == "" || s.Subject == a.Subject)
 }
 
-type alertSample struct {
-	Rule, Subject, Message string
-	Bad                    bool
-	Value                  float64
-}
-
 type alertTrack struct {
 	hist                []bool
 	badRun, goodRun     int
@@ -257,8 +87,8 @@ type AlertEngine struct {
 	mu       sync.Mutex
 	path     string
 	node     string
-	cfg      func() *AlertsConfig
-	sample   func(now time.Time) []alertSample
+	cfg      func() *core.AlertsConfig
+	sample   func(now time.Time) []core.AlertSample
 	now      func() time.Time
 	alerts   map[string]*Alert // by ID
 	tracks   map[string]*alertTrack
@@ -271,7 +101,7 @@ type AlertEngine struct {
 	cnt      map[string][]cntPoint
 }
 
-func NewAlertEngine(stateDir, node string, cfg func() *AlertsConfig) *AlertEngine {
+func NewAlertEngine(stateDir, node string, cfg func() *core.AlertsConfig) *AlertEngine {
 	e := &AlertEngine{path: filepath.Join(stateDir, "alerts.json"), node: node, cfg: cfg, now: time.Now,
 		alerts: map[string]*Alert{}, tracks: map[string]*alertTrack{}, send: postWebhook}
 	e.load()
@@ -314,11 +144,11 @@ func (e *AlertEngine) saveLocked() {
 	st.Silences = e.silences
 	b, err := json.Marshal(st)
 	if err == nil {
-		err = writeAtomic(e.path, b, 0o600)
+		err = core.WriteAtomic(e.path, b, 0o600)
 	}
 	if err != nil && time.Since(e.lastErr) > time.Hour {
 		e.lastErr = time.Now()
-		warnf("alerts: could not save %s: %v", e.path, err)
+		core.Warnf("alerts: could not save %s: %v", e.path, err)
 	}
 }
 
@@ -345,7 +175,7 @@ func (e *AlertEngine) Run(ctx context.Context) {
 // Tick makes one round of checks.
 func (e *AlertEngine) Tick() {
 	now := e.now()
-	var samples []alertSample
+	var samples []core.AlertSample
 	if e.sample != nil {
 		samples = e.sample(now)
 	}
@@ -358,17 +188,17 @@ type alertNote struct {
 }
 
 // apply feeds one round of samples through the rules.
-func (e *AlertEngine) apply(now time.Time, samples []alertSample) {
+func (e *AlertEngine) apply(now time.Time, samples []core.AlertSample) {
 	cfg := e.cfg()
 	var notes []alertNote
 	e.mu.Lock()
 	seen := map[string]bool{}
 	for _, s := range samples {
-		def, ok := alertDefByID(s.Rule)
+		def, ok := core.AlertDefByID(s.Rule)
 		if !ok {
 			continue
 		}
-		r := cfg.rule(def)
+		r := cfg.Rule(def)
 		if !r.Enabled {
 			continue
 		}
@@ -382,22 +212,22 @@ func (e *AlertEngine) apply(now time.Time, samples []alertSample) {
 			continue
 		}
 		rule, subject, _ := strings.Cut(key, "|")
-		def, ok := alertDefByID(rule)
-		r := cfg.rule(def)
+		def, ok := core.AlertDefByID(rule)
+		r := cfg.Rule(def)
 		if !ok || !r.Enabled {
 			notes = e.closeKeyLocked(now, key, "rule off", "", notes)
 			delete(e.tracks, key)
 			continue
 		}
-		notes = e.feedLocked(now, key, alertSample{Rule: rule, Subject: subject}, r, notes)
+		notes = e.feedLocked(now, key, core.AlertSample{Rule: rule, Subject: subject}, r, notes)
 	}
 	// alerts of a rule that was switched off, or that are open without a track (after a restart): close the first kind
 	for _, a := range e.alerts {
 		if a.Closed != 0 {
 			continue
 		}
-		def, ok := alertDefByID(a.Rule)
-		if !ok || !cfg.rule(def).Enabled {
+		def, ok := core.AlertDefByID(a.Rule)
+		if !ok || !cfg.Rule(def).Enabled {
 			notes = e.closeAlertLocked(now, a, "rule off", "", notes)
 		}
 	}
@@ -426,15 +256,15 @@ func (e *AlertEngine) silencedLocked(a *Alert, now time.Time) bool {
 }
 
 // feedLocked adds one sample to the key's track and opens or closes its alert when the rule says so.
-func (e *AlertEngine) feedLocked(now time.Time, key string, s alertSample, r ruleView, notes []alertNote) []alertNote {
+func (e *AlertEngine) feedLocked(now time.Time, key string, s core.AlertSample, r core.RuleView, notes []alertNote) []alertNote {
 	t := e.tracks[key]
 	if t == nil {
 		t = &alertTrack{}
 		e.tracks[key] = t
 	}
 	t.hist = append(t.hist, s.Bad)
-	if len(t.hist) > alertHistLen {
-		t.hist = t.hist[len(t.hist)-alertHistLen:]
+	if len(t.hist) > core.AlertHistLen {
+		t.hist = t.hist[len(t.hist)-core.AlertHistLen:]
 	}
 	if s.Bad {
 		if t.badRun == 0 {
@@ -454,7 +284,7 @@ func (e *AlertEngine) feedLocked(now time.Time, key string, s alertSample, r rul
 	if open == nil {
 		if s.Bad && alertTriggered(r, t, now) {
 			notes = e.openLocked(now, key, s, r, notes)
-		} else if !s.Bad && t.goodRun > alertHistLen {
+		} else if !s.Bad && t.goodRun > core.AlertHistLen {
 			delete(e.tracks, key) // nothing to follow: a subject that has been fine for a long while
 		}
 		return notes
@@ -485,7 +315,7 @@ func (e *AlertEngine) openAlertLocked(key string) *Alert {
 	return nil
 }
 
-func alertTriggered(r ruleView, t *alertTrack, now time.Time) bool {
+func alertTriggered(r core.RuleView, t *alertTrack, now time.Time) bool {
 	if r.Kind != "updown" {
 		return t.badRun > 0 && now.Sub(t.badSince) >= time.Duration(r.ForMinNow)*time.Minute
 	}
@@ -508,14 +338,14 @@ func alertTriggered(r ruleView, t *alertTrack, now time.Time) bool {
 	return t.badRun >= r.After
 }
 
-func alertCleared(r ruleView, t *alertTrack, now time.Time) bool {
+func alertCleared(r core.RuleView, t *alertTrack, now time.Time) bool {
 	if r.ClearMode == "minutes" {
 		return t.goodRun > 0 && now.Sub(t.goodSince) >= time.Duration(r.Clear)*time.Minute
 	}
 	return t.goodRun >= r.Clear
 }
 
-func (e *AlertEngine) openLocked(now time.Time, key string, s alertSample, r ruleView, notes []alertNote) []alertNote {
+func (e *AlertEngine) openLocked(now time.Time, key string, s core.AlertSample, r core.RuleView, notes []alertNote) []alertNote {
 	var a *Alert
 	for _, c := range e.alerts { // back within the hour: the same alert again
 		if c.Closed != 0 && c.Rule == s.Rule && c.Subject == s.Subject && now.Unix()-c.Closed < int64(alertFlapWindow/time.Second) {
@@ -586,17 +416,17 @@ func (e *AlertEngine) trimLocked(now time.Time) {
 
 // ── telling people ───────────────────────────────────────────────────────────
 
-func (e *AlertEngine) notify(cfg *AlertsConfig, notes []alertNote) {
+func (e *AlertEngine) notify(cfg *core.AlertsConfig, notes []alertNote) {
 	for _, n := range notes {
 		a := n.a
 		line := fmt.Sprintf("alert %s: [%s] %s — %s (%s)", n.event, a.Severity, a.Title, a.Message, e.node)
 		switch {
 		case n.event == "resolved":
-			infof("%s", line)
+			core.Infof("%s", line)
 		case a.Severity == "info":
-			infof("%s", line)
+			core.Infof("%s", line)
 		default:
-			warnf("%s", line)
+			core.Warnf("%s", line)
 		}
 		if cfg == nil || cfg.Webhook == "" {
 			continue
@@ -605,7 +435,7 @@ func (e *AlertEngine) notify(cfg *AlertsConfig, notes []alertNote) {
 		go func(u string) {
 			if err := e.send(u, body); err != nil && time.Since(e.lastErrAt()) > time.Minute {
 				e.setLastErr()
-				warnf("alerts: the webhook did not take the message: %v", err)
+				core.Warnf("alerts: the webhook did not take the message: %v", err)
 			}
 		}(cfg.Webhook)
 	}
@@ -638,7 +468,7 @@ func postWebhook(u string, body []byte) error {
 	if err != nil {
 		return err
 	}
-	resp, err := ipv4FirstClient(10 * time.Second).Do(req)
+	resp, err := core.Ipv4FirstClient(10 * time.Second).Do(req)
 	if err != nil {
 		return err
 	}
@@ -671,11 +501,11 @@ func alertBefore(a, b Alert) bool {
 
 // AlertView is the Monitor ▸ Alerts page's data.
 type AlertView struct {
-	Node     string     `json:"node"`
-	Now      int64      `json:"now"`
-	Alerts   []Alert    `json:"alerts"`
-	Silences []Silence  `json:"silences"`
-	Rules    []ruleView `json:"rules"`
+	Node     string          `json:"node"`
+	Now      int64           `json:"now"`
+	Alerts   []Alert         `json:"alerts"`
+	Silences []Silence       `json:"silences"`
+	Rules    []core.RuleView `json:"rules"`
 }
 
 func (e *AlertEngine) View() AlertView {
@@ -701,8 +531,8 @@ func (e *AlertEngine) View() AlertView {
 			v.Silences = append(v.Silences, s)
 		}
 	}
-	for _, d := range alertDefs {
-		v.Rules = append(v.Rules, cfg.rule(d))
+	for _, d := range core.AlertDefs {
+		v.Rules = append(v.Rules, cfg.Rule(d))
 	}
 	return v
 }
@@ -748,7 +578,7 @@ func (e *AlertEngine) Ack(id string, ack bool, by string) error {
 	} else {
 		a.AckedBy, a.AckedAt = "", 0
 	}
-	infof("alerts: %q %s %q (%s)", by, map[bool]string{true: "acknowledged", false: "took back the acknowledgement of"}[ack], a.Title, a.Subject)
+	core.Infof("alerts: %q %s %q (%s)", by, map[bool]string{true: "acknowledged", false: "took back the acknowledgement of"}[ack], a.Title, a.Subject)
 	e.saveLocked()
 	return nil
 }
@@ -774,9 +604,9 @@ func (e *AlertEngine) Silence(id string, minutes int, by string) error {
 	e.silences = keep
 	if minutes > 0 {
 		e.silences = append(e.silences, Silence{ID: newAlertID(), Rule: a.Rule, Subject: a.Subject, Until: now + int64(minutes)*60, By: by, Created: now})
-		infof("alerts: %q silenced %q (%s) for %d minutes", by, a.Title, a.Subject, minutes)
+		core.Infof("alerts: %q silenced %q (%s) for %d minutes", by, a.Title, a.Subject, minutes)
 	} else {
-		infof("alerts: %q ended the silence of %q (%s)", by, a.Title, a.Subject)
+		core.Infof("alerts: %q ended the silence of %q (%s)", by, a.Title, a.Subject)
 	}
 	e.saveLocked()
 	return nil
@@ -791,7 +621,7 @@ func (e *AlertEngine) Resolve(id, by string) error {
 		return errors.New("that alert is not open any more")
 	}
 	notes := e.closeAlertLocked(e.now(), a, "manual", by, nil)
-	infof("alerts: %q marked %q (%s) resolved", by, a.Title, a.Subject)
+	core.Infof("alerts: %q marked %q (%s) resolved", by, a.Title, a.Subject)
 	e.saveLocked()
 	cfg := e.cfg()
 	e.mu.Unlock()

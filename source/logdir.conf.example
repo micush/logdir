@@ -13,8 +13,8 @@
   ],
   "settings": {
     "mcp_acl": ["10.0.0.0/24"],
-    "flow": {
-      "exporters": [
+    "logs": {
+      "senders": [
         {"name": "core-sw1", "address": "10.9.0.1"},
         {"name": "branches", "address": "10.20.0.0/16"},
         {"name": "fw1", "address": "fw1.example.com"}

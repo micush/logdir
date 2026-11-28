@@ -8,32 +8,20 @@ import (
 	"strings"
 	"testing"
 	"time"
-)
 
-func TestMCPACLNormalised(t *testing.T) {
-	got, err := normMCPACL([]string{" 10.1.1.50  RW", "10.1.0.0/24", "10.1.1.50", "Mon.Example.com.", "2001:db8::5 ro", "192.0.2.9 read-write"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(got, "|") != "10.1.1.50 rw|10.1.0.0/24|mon.example.com|2001:db8::5|192.0.2.9 rw" {
-		t.Fatalf("%q", got)
-	}
-	for _, bad := range []string{"10.1.0.0/24 rw", "mon.example.com rw", "10.1.1.50 admin", "10.1.1.50 rw extra", "not an address"} {
-		if _, err := normMCPACL([]string{bad}); err == nil {
-			t.Errorf("%q was accepted", bad)
-		}
-	}
-}
+	"logdir/internal/core"
+	"logdir/internal/logs"
+)
 
 // mcpEnv is a web server whose MCP access list is acl; post sends one JSON-RPC message and returns the HTTP status and body.
 func mcpEnv(t *testing.T, acl ...string) (*webEnv, func(msg string, hdr ...string) (int, map[string]any)) {
 	t.Helper()
 	e := newWebEnv(t)
 	e.mg.webH = e.ws.Handler()
-	sup := e.ws.status.sup
-	sup.mu.Lock()
-	sup.dc.Settings.MCPACL = acl
-	sup.mu.Unlock()
+	sup := e.ws.Status.Sup()
+	sup.Mu.Lock()
+	sup.Dc.Settings.MCPACL = acl
+	sup.Mu.Unlock()
 	return e, func(msg string, hdr ...string) (int, map[string]any) {
 		req, _ := http.NewRequest("POST", e.ts.URL+"/mcp", strings.NewReader(msg))
 		req.Header.Set("Content-Type", "application/json")
@@ -142,24 +130,24 @@ func TestMCPRefusesBrowsersAndGET(t *testing.T) {
 
 func TestMCPResultLimitSetting(t *testing.T) {
 	e, _ := mcpEnv(t, "127.0.0.1")
-	sup := e.ws.status.sup
-	if sup.mcpResultLimit() != 1<<20 {
-		t.Fatalf("default %d", sup.mcpResultLimit())
+	sup := e.ws.Status.Sup()
+	if sup.McpResultLimit() != 1<<20 {
+		t.Fatalf("default %d", sup.McpResultLimit())
 	}
-	sup.mu.Lock()
-	sup.dc.Settings.MCPMaxResultMB = 4
-	sup.mu.Unlock()
-	if sup.mcpResultLimit() != 4<<20 {
-		t.Fatalf("4 MB: %d", sup.mcpResultLimit())
+	sup.Mu.Lock()
+	sup.Dc.Settings.MCPMaxResultMB = 4
+	sup.Mu.Unlock()
+	if sup.McpResultLimit() != 4<<20 {
+		t.Fatalf("4 MB: %d", sup.McpResultLimit())
 	}
 	for _, n := range []int{-1, 9} {
-		dc := newDaemonConfig()
+		dc := core.NewDaemonConfig()
 		dc.Settings.MCPMaxResultMB = n
 		if err := dc.Validate(); err == nil {
 			t.Errorf("accepted %d MB", n)
 		}
 	}
-	dc := newDaemonConfig()
+	dc := core.NewDaemonConfig()
 	dc.Settings.MCPMaxResultMB = 1
 	if err := dc.Validate(); err != nil || dc.Settings.MCPMaxResultMB != 0 {
 		t.Errorf("1 MB is the default and is not written: %v %d", err, dc.Settings.MCPMaxResultMB)
@@ -178,12 +166,12 @@ func requireGateTools(t *testing.T, post func(string, ...string) (int, map[strin
 	_, m := post(`{"jsonrpc":"2.0","id":1,"method":"tools/list"}`, hdr...)
 	have := toolNames(t, m)
 	for _, want := range []string{"list_nodes", "get_topology", "logs_search", "logs_stats", "logs_senders", "logs_status", "logs_shipping"} {
-		if !containsStr(have, want) {
+		if !core.ContainsStr(have, want) {
 			t.Errorf("%s is not offered: %v", want, have)
 		}
 	}
 	for _, gone := range mcpClusterGone {
-		if containsStr(have, gone) {
+		if core.ContainsStr(have, gone) {
 			t.Errorf("%s is offered", gone)
 		}
 		if _, m := post(mcpCall(gone, `{}`), hdr...); m["error"] == nil {
@@ -218,16 +206,16 @@ func TestMCPListNodesStandalone(t *testing.T) {
 		return out
 	}
 	n := nodes()[0]
-	if n["primary"] != true || n["role"] != "primary" || n["this_node"] != true || n["paused"] != false || n["version"] != version() {
+	if n["primary"] != true || n["role"] != "primary" || n["this_node"] != true || n["paused"] != false || n["version"] != core.Version() {
 		t.Fatalf("standalone node: %v", n)
 	}
 	if _, has := n["addr"]; has {
 		t.Fatalf("a node with no cluster has no cluster address: %v", n)
 	}
-	sup := e.ws.status.sup
-	sup.mu.Lock()
-	sup.dc.NodePaused = true
-	sup.mu.Unlock()
+	sup := e.ws.Status.Sup()
+	sup.Mu.Lock()
+	sup.Dc.NodePaused = true
+	sup.Mu.Unlock()
 	if n = nodes()[0]; n["paused"] != true || n["primary"] != true {
 		t.Fatalf("paused standalone node: %v", n)
 	}
@@ -241,15 +229,15 @@ func TestMCPListNodesStandalone(t *testing.T) {
 // privacy layer hides public addresses (v4 and v6), the domain of an e-mail address and public AS numbers, in the message
 // and in its fields, while private addresses stay.
 func TestMCPLogTools(t *testing.T) {
-	old := ldSvc
-	defer func() { ldSvc = old }()
-	ldSvc = newLdService(nil, nil)
-	ldSvc.testCfg.Store(&LogsConfig{Enabled: true})
+	old := logs.LdSvc
+	defer func() { logs.LdSvc = old }()
+	logs.LdSvc = logs.NewLdService(nil, nil, "", nil)
+	logs.LdSvc.TestCfg.Store(&core.LogsConfig{Enabled: true})
 	now := time.Now()
-	ldSvc.store = newTestStore(t, &now)
+	logs.LdSvc.Store = newTestStore(t, &now)
 	at := now.Add(-5 * time.Minute)
-	ldSvc.store.Add(LdMsg{T: at.UnixMilli(), Host: "sw1", Prog: "sshd", Sev: 3, Fac: 4, Msg: "Failed password for jo.doe@example.com from 8.8.8.8 port 2222", Src: "10.1.1.5", Via: "udp"})
-	ldSvc.store.Add(LdMsg{T: at.Add(time.Second).UnixMilli(), Host: "fw1", Prog: "TRAFFIC", Sev: 6, Fac: 1,
+	logs.LdSvc.Store.Add(core.LdMsg{T: at.UnixMilli(), Host: "sw1", Prog: "sshd", Sev: 3, Fac: 4, Msg: "Failed password for jo.doe@example.com from 8.8.8.8 port 2222", Src: "10.1.1.5", Via: "udp"})
+	logs.LdSvc.Store.Add(core.LdMsg{T: at.Add(time.Second).UnixMilli(), Host: "fw1", Prog: "TRAFFIC", Sev: 6, Fac: 1,
 		Msg: "action=deny src=2001:4860:4860::8888 src_ip=10.0.0.7 dst_ip=1.1.1.1 dst_port=443 peer AS 15169", Src: "10.1.1.6", Via: "tcp"})
 	_, post := mcpEnv(t, "127.0.0.0/8")
 	call := func(name, args string) string {

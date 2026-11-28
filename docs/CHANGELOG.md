@@ -1,5 +1,104 @@
 # Changelog
 
+## [v52] - 2026-11-28 — the Go code is split into packages, and the GUI into one script per page
+
+### Changed
+- **The Go code is now six packages instead of one.** Before, about 300 files were one `package main`, where any file could reach into any other. Now each package imports only the ones below it:
+  - `internal/core`: configuration (the syslog settings too), the parsing, filter and query-language helpers that have no state, the gateway engines, supervisor, certificates, backups, updates, captures and shared helpers (26,804 lines, 339 tests).
+  - `internal/cluster`: the signed, pinned node channel, joining, the election, shared settings and rolling updates (5,250 lines, 42 tests).
+  - `internal/logs`: the collector, covering the UDP, TCP and TLS listeners, the store, search, tail and statistics across the cluster, saved searches, shipping, and its answers to the other nodes (7,947 lines, 65 tests).
+  - `internal/web`: the management GUI, sign-in, sessions and the relay (3,362 lines, 19 tests).
+  - `internal/mcp`: the MCP endpoint and its `logs_*` tools (1,767 lines, 20 tests).
+  - `main` in `source/`: the CLI, the management layer (`Mgmt`), the status server, alerts and the scheduler (10,893 lines, 201 tests that need a whole node).
+- The package is named `logs`, not `log`, so it does not shadow Go's own `log` package.
+- **Lower packages no longer reach up.** Before the move, each place where lower code used higher code was replaced with an interface or a hook. These are the same as in FlowDirector v57 and FileDirector v120:
+  - the cluster uses `ClusterHost`, which `Mgmt` fills in;
+  - the web server uses `WebHost` and `StatusHost`;
+  - the layers above hand the cluster what they answer on the cluster port (`Cluster.SetRoutes`; each call adds to the earlier ones);
+  - MCP attaches itself to the web server's `/mcp` (`SetMCP`);
+  - the gateway and anycast uptime bookkeeping moved into the cluster.
+- **Two changes for the collector:**
+  - Its peer answer (`/cluster/log/query`) was a method of the cluster. It is now the collector's own (`logPeerRoutes`), given to the cluster when the node starts.
+  - The collector is given the cluster, the state directory and the certificate manager (for the TLS syslog listener) instead of the whole management layer.
+- **How the move was done.** A tool driven by the type checker moved each declaration, exported the 669 names used across packages, and qualified every use. Struct fields that became exported got `json:"-"`, so no JSON reply, config file or cluster message changed. Some members were renamed ahead of the move, because exporting them would have clashed with a member of the same name:
+  - `LogsConfig.trapPort()` → `trapPortOrDefault()`, `maxLine()` → `maxLineOrDefault()`, and `LogDestCfg.protocol()` → `protocolOrDefault()`;
+  - the collector's `senders` table → `bySender`;
+  - two test helpers that were methods of the collector (`send`, `addNow`) are now functions.
+- `go:embed` cannot reach above its directory, so `embed.go` in `source/` embeds `webui/` and `VERSION` and hands them down.
+- **`webui/app.js` (6,804 lines) is now 24 scripts in `webui/app/`:**
+  - `core.js` holds what every page uses: state, the API, the drawing helpers, the shell and sign-in.
+  - There is one file per page: `logs.js` (Logs), `senders.js`, `shipping.js`, `topology.js`, `gateways.js`, `settings.js` and the rest.
+  - `boot.js` comes last.
+  - They are classic scripts sharing one scope, in the same order as before, so nothing runs differently.
+  - The server answers `/app/<name>.js` with the version filled in for the reload-after-upgrade check; `/app.js` is gone.
+- Tests that read Go or GUI source by name (the op names, routes, help coverage, hints, the weak-key list) now read every file of that name in the tree, or the scripts `index.html` loads.
+- CLAUDE.md describes the new layout and how to add a page.
+
+### Fixed
+- **`logdir.conf.example` did not load** (`json: unknown field "flow"`). QUICKSTART.md and the installer tell people to copy it as their config, so a new install that did that would not start. This was already so in v50. Its `settings.flow.exporters` block (from flowdir) is now a `settings.logs.senders` block with the same three example senders. FileDirector v118 fixed the same leftover.
+
+### Emptied (kept, never deleted)
+- 184 `.go` files in `source/` whose code moved into `internal/` now hold only `package main` and a comment naming where the code went. `webui/app.js` is emptied the same way. They are kept so a tree copied over an older one still builds.
+
+### Verified
+- gofmt, `go build`, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./...` and `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64. The same 686 tests ran before and after the split.
+- `node --check` of every script, plus an eslint pass over the 24 scripts, each seeing what the others declare: no undefined or twice-declared name.
+- The new `logdir.conf.example` loads and the daemon starts with it.
+- **Three real daemons with real PAM**, joined into a cluster. Only node 1 could hold the syslog ports, since they share one host, so it was the collector:
+  - syslog messages sent to node 1 were found by `--logs-search` on nodes 2 and 3 ("from 3 node(s)"), over the collector's peer route, which is now registered through `SetRoutes`;
+  - on node 3, MCP `initialize`, `tools/list` (8 tools), `logs_search`, `logs_stats` and `logs_status` worked;
+  - the node relay worked, and a shared-settings edit sent through it reached all three nodes, recorded as `fdtest via 127.0.0.1:…`;
+  - `--cluster-promote` worked;
+  - `--update-upload` and `--update-push all` of this tree, numbered one higher for the test: every node built the new layout from source, restarted and confirmed it, and search still worked afterwards.
+- **Chromium, light and dark:**
+  - all 28 pages load with no script error;
+  - the help panel opens;
+  - the Logs page shows the messages;
+  - the virtual-MAC **Test** popup and the Topology tooltip from v51 still work.
+
+### Not verified
+- Several collectors at once. With three nodes on one host only one can listen on the syslog ports. The answers of several nodes are merged by the same code path that was tested, against one node with data and two without.
+
+## [v51] - 2026-11-28 — the virtual-MAC Test button and tooltip work; empty placeholders removed
+
+### Fixed
+- **The Test button on Monitor ▸ Gateways threw an error and did nothing.** It called `vmacTestPopup`, which was defined nowhere. It now opens a popup titled "Virtual MAC test · <gateway>". The popup runs the test on the node picked in the Node menu (`POST /api/vmactest`), which takes a few seconds, then shows:
+  - the result: *Delivered*, *NOT delivered* or *Inconclusive*;
+  - one line for each address family;
+  - when the result is *NOT delivered*, a hint to turn on real MAC addresses.
+  
+  A failure shows as plain red text. This is the same fix as FlowDirector v56 and FileDirector v121.
+- **The gateway's tooltip on Topology threw an error** whenever the node had a test result (which it has from the test that runs when a gateway starts), because `vmacLine` was defined nowhere. Now the tooltip ends with, for example, "Virtual MACs: test inconclusive (tested 13s ago) — …". A *NOT delivered* result is not repeated, because the status line already says it.
+- **Help text left from NTP Director:**
+  - Monitor ▸ Gateways said each node answers "NTP" on the address. It now says the node's MCP and web listener does, which is what the Service column shows.
+  - The certificate help said the certificate is used for NTS (Configure ▸ NTP ▸ Security), a page logdir does not have. It now says the MCP listener on each gateway address uses it.
+- In `clusternet.go`, a variable named `ntpUp` (from the same fork) is now `serviceUp`. Nothing behaves differently.
+
+### Changed
+- The help for Monitor ▸ Gateways now explains the Test button and its three results, and lists `logdir --test-vmac --group 100`.
+
+### Removed
+- **Every empty placeholder file, a one-time exception approved by the owner** to the rule that a file is never deleted from the tree. That is 165 files, each holding nothing but `package` and a comment (and in `devprobe`, an empty `main` and `{}`):
+  - 33 in `source/`;
+  - the whole `source/device/` package (130 files);
+  - `source/tools/devprobe/` (2).
+- `source/` goes from 482 files to 317. Nothing in the code, the scripts or the docs referred to them.
+
+### Upgrading to this version
+- **The Upgrade page, `--update-upload` and `--update-push`** unpack each release into a fresh directory, so nothing is left behind.
+- **By hand, with `install.sh`:** extract into an empty directory. Extracting over an older tree also builds while the files left behind are these empty placeholders.
+- **The never-delete rule in CLAUDE.md is unchanged.**
+
+### Verified
+- gofmt, `go build`, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./...` and `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64, `node --check` of every script.
+- **A real daemon with real PAM** and a gateway whose interface is missing, so the real result is *Inconclusive*. In Chromium, light and dark:
+  - **Test** opens the popup with that result, and Close closes it;
+  - the Topology tooltip shows the line;
+  - all 28 pages load with no script error, and the help panel opens.
+
+### Not verified
+- The *Delivered* and *NOT delivered* results in the popup. They need a router on a real network, which the sandbox does not have.
+
 ## [v50] - 2026-11-28 — MCP: list_nodes on a node with no cluster, logs_shipping in the instructions, src= no longer hides src_ip
 
 ### Fixed

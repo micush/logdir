@@ -5,31 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
+
+	"logdir/internal/core"
+	"logdir/internal/logs"
 )
-
-// The rules of the alerts (see alerts.go) and what they read.
-
-var alertDefs = []alertDef{
-	{ID: "listener_down", Title: "MCP listener down", Subject: "gateway", Kind: "updown", Sev: "critical", On: true, Go: "gateways"},
-	{ID: "no_active_gateway", Title: "No active gateway", Subject: "gateway", Kind: "updown", Sev: "critical", On: true, Go: "gateways"},
-	{ID: "certificate_expiring", Title: "Certificate about to expire", Subject: "certificate", Kind: "value", Sev: "warning", On: true, Unit: "days left", Below: true, Thresh: 14, ForMin: 0, Go: "cfg_web"},
-	{ID: "backup_failed", Title: "Backup failed", Subject: "", Kind: "updown", Sev: "warning", On: true, DefMode: "minutes", DefAfter: 30, Go: "cfg_backup"},
-	{ID: "cpu_high", Title: "CPU busy", Subject: "", Kind: "value", Sev: "warning", On: true, Unit: "% CPU", Thresh: 90, ForMin: 15, Go: "host"},
-	{ID: "memory_high", Title: "Memory nearly full", Subject: "", Kind: "value", Sev: "warning", On: true, Unit: "% memory", Thresh: 90, ForMin: 15, Go: "host"},
-	{ID: "log_pattern", Title: "Log pattern matched", Subject: "pattern", Kind: "updown", Sev: "warning", On: true, DefMode: "in_a_row", DefAfter: 1, Go: "logs"},
-	{ID: "disk_full", Title: "Disk nearly full", Subject: "filesystem", Kind: "value", Sev: "warning", On: true, Unit: "% full", Thresh: 90, ForMin: 10, Go: "host"},
-}
-
-func alertDefByID(id string) (alertDef, bool) {
-	for _, d := range alertDefs {
-		if d.ID == id {
-			return d, true
-		}
-	}
-	return alertDef{}, false
-}
 
 // cntPoint is kept for the engine's per-key counter history.
 type cntPoint struct {
@@ -38,18 +18,18 @@ type cntPoint struct {
 }
 
 // sampleNode reads everything the rules look at, on this node.
-func (e *AlertEngine) sampleNode(now time.Time) []alertSample {
+func (e *AlertEngine) sampleNode(now time.Time) []core.AlertSample {
 	st := e.st
 	if st == nil {
 		return nil
 	}
-	var out []alertSample
+	var out []core.AlertSample
 	type gk struct {
 		gid int
 		af  string
 	}
 	active, local, serving, up := map[gk]bool{}, map[gk]bool{}, map[gk]bool{}, map[gk]bool{}
-	for _, r := range st.snapshot() {
+	for _, r := range st.Snapshot() {
 		k := gk{r.GroupID, r.AF}
 		if r.State == "active" {
 			active[k] = true
@@ -64,39 +44,39 @@ func (e *AlertEngine) sampleNode(now time.Time) []alertSample {
 	}
 	for k := range local {
 		subj := fmt.Sprintf("group %d %s", k.gid, k.af)
-		out = append(out, alertSample{Rule: "no_active_gateway", Subject: subj, Bad: !active[k], Message: "no node is the active gateway of " + subj})
+		out = append(out, core.AlertSample{Rule: "no_active_gateway", Subject: subj, Bad: !active[k], Message: "no node is the active gateway of " + subj})
 		if serving[k] {
-			out = append(out, alertSample{Rule: "listener_down", Subject: subj, Bad: !up[k], Message: "this node serves " + subj + " but its MCP and web listener is not serving"})
+			out = append(out, core.AlertSample{Rule: "listener_down", Subject: subj, Bad: !up[k], Message: "this node serves " + subj + " but its MCP and web listener is not serving"})
 		}
 	}
 	if e.mg != nil && e.mg.certs != nil {
-		if lc, err := e.mg.certs.current(false); err == nil && lc != nil && !lc.info.NotAfter.IsZero() {
-			days := time.Until(lc.info.NotAfter).Hours() / 24
-			out = append(out, alertSample{Rule: "certificate_expiring", Subject: "web", Value: days, Bad: days < e.threshold("certificate_expiring"),
-				Message: fmt.Sprintf("the web certificate runs out on %s (%.0f days)", lc.info.NotAfter.Format("2006-01-02"), days)})
+		if lc, err := e.mg.certs.Current(false); err == nil && lc != nil && !lc.Info.NotAfter.IsZero() {
+			days := time.Until(lc.Info.NotAfter).Hours() / 24
+			out = append(out, core.AlertSample{Rule: "certificate_expiring", Subject: "web", Value: days, Bad: days < e.threshold("certificate_expiring"),
+				Message: fmt.Sprintf("the web certificate runs out on %s (%.0f days)", lc.Info.NotAfter.Format("2006-01-02"), days)})
 		}
 	}
 	if e.mg != nil && e.mg.backup != nil {
 		if failing, enabled, msg := e.mg.backup.Failing(); enabled {
-			out = append(out, alertSample{Rule: "backup_failed", Bad: failing, Message: "the last backup failed: " + msg})
+			out = append(out, core.AlertSample{Rule: "backup_failed", Bad: failing, Message: "the last backup failed: " + msg})
 		}
 	}
-	if h := hoststats.lastNow(); h.At != 0 {
-		out = append(out, alertSample{Rule: "cpu_high", Value: h.CPU, Bad: h.CPU > e.threshold("cpu_high"), Message: fmt.Sprintf("CPU is at %.0f%%", h.CPU)})
-		out = append(out, alertSample{Rule: "memory_high", Value: h.MemPct, Bad: h.MemPct > e.threshold("memory_high"), Message: fmt.Sprintf("memory is %.0f%% in use", h.MemPct)})
+	if h := core.Hoststats.LastNow(); h.At != 0 {
+		out = append(out, core.AlertSample{Rule: "cpu_high", Value: h.CPU, Bad: h.CPU > e.threshold("cpu_high"), Message: fmt.Sprintf("CPU is at %.0f%%", h.CPU)})
+		out = append(out, core.AlertSample{Rule: "memory_high", Value: h.MemPct, Bad: h.MemPct > e.threshold("memory_high"), Message: fmt.Sprintf("memory is %.0f%% in use", h.MemPct)})
 		for _, f := range h.FS {
-			out = append(out, alertSample{Rule: "disk_full", Subject: f.Mount, Value: f.Pct, Bad: f.Pct > e.threshold("disk_full"), Message: fmt.Sprintf("%s is %.0f%% full", f.Mount, f.Pct)})
+			out = append(out, core.AlertSample{Rule: "disk_full", Subject: f.Mount, Value: f.Pct, Bad: f.Pct > e.threshold("disk_full"), Message: fmt.Sprintf("%s is %.0f%% full", f.Mount, f.Pct)})
 		}
 	}
-	out = append(out, ldAlertSamples()...)
+	out = append(out, logs.LdAlertSamples()...)
 	sort.SliceStable(out, func(i, j int) bool { return out[i].Rule < out[j].Rule })
 	return out
 }
 
 // threshold is the rule's threshold in force.
 func (e *AlertEngine) threshold(id string) float64 {
-	d, _ := alertDefByID(id)
-	return e.cfg().rule(d).Threshold
+	d, _ := core.AlertDefByID(id)
+	return e.cfg().Rule(d).Threshold
 }
 
 // ── the Fix menu ─────────────────────────────────────────────────────────────
@@ -148,8 +128,8 @@ func (m *Mgmt) alertsOp(cmd string, raw json.RawMessage, actor string) (any, err
 		var allowed bool
 		for _, al := range view.Alerts {
 			if al.ID == a.ID {
-				d, _ := alertDefByID(al.Rule)
-				allowed = containsStr(d.Fix, a.Action)
+				d, _ := core.AlertDefByID(al.Rule)
+				allowed = core.ContainsStr(d.Fix, a.Action)
 			}
 		}
 		if !allowed {
@@ -159,10 +139,8 @@ func (m *Mgmt) alertsOp(cmd string, raw json.RawMessage, actor string) (any, err
 		if err != nil {
 			return nil, err
 		}
-		warnf("alerts: %q ran %q for an alert", actor, alertFixes[a.Action])
+		core.Warnf("alerts: %q ran %q for an alert", actor, alertFixes[a.Action])
 		return map[string]any{"ok": true, "message": msg}, nil
 	}
 	return nil, fmt.Errorf("unknown command %q", cmd)
 }
-
-var _ = strings.TrimSpace

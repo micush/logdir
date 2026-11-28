@@ -1,3 +1,3 @@
 package main
 
-import ()
+// Emptied in v52: its code moved to .

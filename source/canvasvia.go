@@ -7,6 +7,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"logdir/internal/core"
 )
 
 // A gateway this node does not serve (another subnet, removed from it, paused here) has nothing of its own to show: no
@@ -19,7 +21,7 @@ var viaFetchTimeout = 4 * time.Second
 
 // servingPeers lists the nodes that can say how the gateway is doing, best first: those serving it well, then those
 // serving it degraded.  Empty when this node serves it itself or nobody does.
-func servingPeers(g CanvasGateway) []CanvasNode {
+func servingPeers(g core.CanvasGateway) []core.CanvasNode {
 	self := ""
 	for _, n := range g.Nodes {
 		if n.Self {
@@ -31,7 +33,7 @@ func servingPeers(g CanvasGateway) []CanvasNode {
 	default:
 		return nil // this node serves it (or is starting it): its own view is the picture
 	}
-	var ok, degraded []CanvasNode
+	var ok, degraded []core.CanvasNode
 	for _, n := range g.Nodes {
 		if n.Self || !n.Reachable || n.Excluded {
 			continue
@@ -43,26 +45,10 @@ func servingPeers(g CanvasGateway) []CanvasNode {
 			degraded = append(degraded, n)
 		}
 	}
-	byAddr := func(l []CanvasNode) { sort.SliceStable(l, func(i, j int) bool { return l[i].Addr < l[j].Addr }) }
+	byAddr := func(l []core.CanvasNode) { sort.SliceStable(l, func(i, j int) bool { return l[i].Addr < l[j].Addr }) }
 	byAddr(ok)
 	byAddr(degraded)
 	return append(ok, degraded...)
-}
-
-// takeFrom puts the serving node's picture of the gateway in place of this node's: its colour, anycast
-// addresses, members and uptime; the cluster's nodes and everything about this node's own entry stay.
-func (g *CanvasGateway) takeFrom(p CanvasGateway, from CanvasNode) {
-	g.Status, g.Detail, g.Families = p.Status, p.Detail, p.Families
-	g.Members, g.Anycast, g.Uptime = p.Members, p.Anycast, p.Uptime
-	// the serving node's own entry is "local" to it, not to this node: nobody is this node here, or the
-	// page would put the controller mark (and the star) on the node it is open on
-	g.Members = make([]CanvasMember, len(p.Members))
-	copy(g.Members, p.Members)
-	for i := range g.Members {
-		g.Members[i].ViaLocal = g.Members[i].Local
-		g.Members[i].Local = false
-	}
-	g.Via, g.ViaAddr = from.Name, from.Addr
 }
 
 // peerCanvases keeps, for a few seconds, the picture each serving node gave of its own gateways, so a poll asks no node that was
@@ -78,17 +64,17 @@ const peerCanvasFor = 3 * time.Second
 
 type peerCanvas struct {
 	at       time.Time
-	data     []CanvasGateway
+	data     []core.CanvasGateway
 	fetching bool
 	tried    bool // a fetch has ended (well or not): later requests do not wait for the next one
 	done     chan struct{}
 }
 
 // askPeerCanvas asks a node, over the cluster channel, for its own picture of its gateways.
-var askPeerCanvas = func(s *StatusServer, ctx context.Context, addr string) ([]CanvasGateway, bool) {
-	resp, err := s.mg.cl.Relay(ctx, addr, proxyReq{User: "topology", Method: http.MethodGet, Path: "/api/canvas?own=1"})
+var askPeerCanvas = func(s *StatusServer, ctx context.Context, addr string) ([]core.CanvasGateway, bool) {
+	resp, err := s.mg.cl.Relay(ctx, addr, core.ProxyReq{User: "topology", Method: http.MethodGet, Path: "/api/canvas?own=1"})
 	var out struct {
-		Data []CanvasGateway `json:"data"`
+		Data []core.CanvasGateway `json:"data"`
 	}
 	if err != nil || resp.Status != http.StatusOK || json.Unmarshal(resp.Body, &out) != nil {
 		return nil, false
@@ -96,7 +82,7 @@ var askPeerCanvas = func(s *StatusServer, ctx context.Context, addr string) ([]C
 	return out.Data, true
 }
 
-func (s *StatusServer) peerCanvasOf(n CanvasNode) []CanvasGateway {
+func (s *StatusServer) peerCanvasOf(n core.CanvasNode) []core.CanvasGateway {
 	peerCanvasMu.Lock()
 	e := peerCanvases[n.Addr]
 	if e == nil {
@@ -113,7 +99,7 @@ func (s *StatusServer) peerCanvasOf(n CanvasNode) []CanvasGateway {
 			defer cancel()
 			data, good := askPeerCanvas(s, cctx, n.Addr)
 			if took := time.Since(t0); took > time.Second {
-				warnf("topology: node %s took %s to give its picture of its gateways (answered: %v)", n.Addr, took.Round(100*time.Millisecond), good)
+				core.Warnf("topology: node %s took %s to give its picture of its gateways (answered: %v)", n.Addr, took.Round(100*time.Millisecond), good)
 			}
 			peerCanvasMu.Lock()
 			defer peerCanvasMu.Unlock()
@@ -144,7 +130,7 @@ func (s *StatusServer) peerCanvasOf(n CanvasNode) []CanvasGateway {
 }
 
 // viaServing replaces, in place, each gateway this node does not serve with the picture of a node that does.
-func (s *StatusServer) viaServing(ctx context.Context, groups []CanvasGateway) {
+func (s *StatusServer) ViaServing(ctx context.Context, groups []core.CanvasGateway) {
 	if s.mg == nil || s.mg.cl == nil {
 		return
 	}
@@ -153,7 +139,7 @@ func (s *StatusServer) viaServing(ctx context.Context, groups []CanvasGateway) {
 		for _, n := range servingPeers(groups[i]) {
 			for _, p := range s.peerCanvasOf(n) {
 				if p.GroupID == groups[i].GroupID {
-					groups[i].takeFrom(p, n)
+					groups[i].TakeFrom(p, n)
 					break peers
 				}
 			}
@@ -165,7 +151,7 @@ func (s *StatusServer) viaServing(ctx context.Context, groups []CanvasGateway) {
 // (already in the gateway) and those the other nodes report in their own view (?own=1), from the picture peerCanvasOf keeps of each
 // (so a node that is slow or does not answer is asked once in a while, in the background, and never holds a poll up).  A node that
 // cannot be asked counts as it was.
-func (s *StatusServer) addPeerClients(ctx context.Context, groups []CanvasGateway) {
+func (s *StatusServer) AddPeerClients(ctx context.Context, groups []core.CanvasGateway) {
 	if s.mg == nil || s.mg.cl == nil || !s.mg.cl.Enabled() {
 		return
 	}

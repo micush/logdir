@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"logdir/internal/core"
 )
 
 var mgmtGETs = []string{
@@ -43,7 +45,7 @@ func (e *webEnv) rawPost(path string, body []byte, csrf bool) resp {
 	return resp{res.StatusCode, m, raw, res.Header}
 }
 
-func putCfg(e *webEnv, mut func(*DaemonConfig)) resp {
+func putCfg(e *webEnv, mut func(*core.DaemonConfig)) resp {
 	dc, _, _ := e.mg.LiveConfig()
 	if mut != nil {
 		mut(dc)
@@ -55,10 +57,10 @@ func putCfg(e *webEnv, mut func(*DaemonConfig)) resp {
 func TestWebVersionsFlow(t *testing.T) {
 	e := newWebEnv(t)
 	e.login("alice", "pw")
-	if r := putCfg(e, func(d *DaemonConfig) { d.Groups = []GroupConfig{defaultGroup()} }); r.code != 200 {
+	if r := putCfg(e, func(d *core.DaemonConfig) { d.Groups = []core.GroupConfig{core.DefaultGroup()} }); r.code != 200 {
 		t.Fatalf("initial save: %d %s", r.code, r.raw)
 	}
-	if r := putCfg(e, func(d *DaemonConfig) { d.Groups[0].Priority = 77 }); r.code != 200 {
+	if r := putCfg(e, func(d *core.DaemonConfig) { d.Groups[0].Priority = 77 }); r.code != 200 {
 		t.Fatalf("second save: %d %s", r.code, r.raw)
 	}
 	r := e.do("GET", "/api/versions", nil, withAuth(e, false))
@@ -120,7 +122,7 @@ func TestWebTLSFlow(t *testing.T) {
 	e := newWebEnv(t)
 	e.login("alice", "pw")
 	r := e.do("GET", "/api/tls", nil, withAuth(e, false))
-	if d := r.body["data"].(map[string]any); r.code != 200 || d["source"] != certSourceSelfSigned {
+	if d := r.body["data"].(map[string]any); r.code != 200 || d["source"] != core.CertSourceSelfSigned {
 		t.Fatalf("status: %d %s", r.code, r.raw)
 	}
 	ca := newTestCA(t)
@@ -132,7 +134,7 @@ func TestWebTLSFlow(t *testing.T) {
 		t.Fatalf("mismatched key: %d %s", r.code, r.raw)
 	}
 	r = e.do("POST", "/api/tls/install", map[string]any{"cert_pem": chain, "key_pem": string(ecKeyPEM(k))}, withAuth(e, true))
-	if r.code != 200 || r.body["data"].(map[string]any)["info"].(map[string]any)["source"] != certSourceInstalled {
+	if r.code != 200 || r.body["data"].(map[string]any)["info"].(map[string]any)["source"] != core.CertSourceInstalled {
 		t.Fatalf("install: %d %s", r.code, r.raw)
 	}
 	if strings.Contains(string(r.raw), "PRIVATE KEY") {
@@ -150,7 +152,7 @@ func TestWebTLSFlow(t *testing.T) {
 		t.Fatalf("csr cancel: %d", r.code)
 	}
 	if r := e.do("POST", "/api/tls/revert", map[string]any{}, withAuth(e, true)); r.code != 200 ||
-		r.body["data"].(map[string]any)["source"] != certSourceSelfSigned {
+		r.body["data"].(map[string]any)["source"] != core.CertSourceSelfSigned {
 		t.Fatalf("revert: %d %s", r.code, r.raw)
 	}
 	if r := e.do("POST", "/api/tls/regenerate", map[string]any{}, withAuth(e, true)); r.code != 200 {
@@ -181,7 +183,7 @@ func TestWebClusterAndUpdateBasics(t *testing.T) {
 		t.Fatalf("good archive: %d %s", r.code, r.raw)
 	}
 	st := e.do("GET", "/api/update", nil, withAuth(e, false))
-	if d := st.body["data"].(map[string]any); d["source_version"] != "1" || d["running"] != version() {
+	if d := st.body["data"].(map[string]any); d["source_version"] != "1" || d["running"] != core.Version() {
 		t.Fatalf("update status: %s", st.raw)
 	}
 	if r := e.do("POST", "/api/update/apply", map[string]any{}, withAuth(e, true)); r.code != 422 ||

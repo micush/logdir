@@ -20,6 +20,12 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
+
+	"logdir/internal/cluster"
+	"logdir/internal/core"
+	"logdir/internal/logs"
+	"logdir/internal/mcp"
+	"logdir/internal/web"
 )
 
 const usageText = `logdir — LogDirector (an MCP gateway to switches and firewalls, on a shared VIP)
@@ -240,7 +246,7 @@ var (
 )
 
 func main() {
-	cpuQuota, cpuProcs = limitProcsToCgroup() // logged by the daemon only, not by every CLI command
+	cpuQuota, cpuProcs = core.LimitProcsToCgroup() // logged by the daemon only, not by every CLI command
 	if len(os.Args) > 1 && os.Args[1] == "?" {
 		fmt.Println(usageText)
 		return
@@ -254,8 +260,8 @@ func main() {
 		showGateways = fs.Bool("show-gateways", false, "")
 		showVersion  = fs.Bool("version", false, "")
 		assertAGC    = fs.Bool("assert-agc", false, "")
-		conf         = fs.String("config", confPath, "")
-		sock         = fs.String("status-socket", statusSocket, "")
+		conf         = fs.String("config", core.ConfPath, "")
+		sock         = fs.String("status-socket", core.StatusSocket, "")
 		level        = fs.String("log-level", "", "")
 		stateDir     = fs.String("state-dir", defaultStateDir, "")
 		restoreFile  = fs.String("restore", "", "")
@@ -276,29 +282,29 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Println("logdir v" + version())
+		fmt.Println("logdir v" + core.Version())
 		return
 	}
 
 	// pre-v15 installs kept the config in /etc/liras: bring it over once, and never
 	// use that location again, even if an old service unit still names it
-	if *conf == legacyConfPath {
-		fmt.Fprintf(os.Stderr, "logdir: %s is no longer used; using %s (update the service unit's --config, or re-run install.sh)\n", legacyConfPath, confPath)
+	if *conf == core.LegacyConfPath {
+		fmt.Fprintf(os.Stderr, "logdir: %s is no longer used; using %s (update the service unit's --config, or re-run install.sh)\n", core.LegacyConfPath, core.ConfPath)
 	}
-	*conf = canonicalConf(*conf)
-	if *conf == confPath && os.Geteuid() == 0 {
-		if moved, err := migrateLegacyConfig(confPath, legacyConfPath); err != nil {
-			fmt.Fprintf(os.Stderr, "logdir: could not move %s to %s: %v\n", legacyConfPath, confPath, err)
+	*conf = core.CanonicalConf(*conf)
+	if *conf == core.ConfPath && os.Geteuid() == 0 {
+		if moved, err := core.MigrateLegacyConfig(core.ConfPath, core.LegacyConfPath); err != nil {
+			fmt.Fprintf(os.Stderr, "logdir: could not move %s to %s: %v\n", core.LegacyConfPath, core.ConfPath, err)
 		} else if moved {
 			fmt.Fprintf(os.Stderr, "logdir: moved your configuration from %s to %s and removed the old files\n",
-				legacyConfPath, confPath)
+				core.LegacyConfPath, core.ConfPath)
 		}
 	}
 
 	switch {
 	case *configure:
 		if err := interactiveConfigure(*conf); err != nil {
-			fatal(err)
+			core.Fatal(err)
 		}
 		return
 	case *showNeigh:
@@ -308,19 +314,19 @@ func main() {
 		showGatewayTable(*sock)
 		return
 	case *restoreFile != "":
-		if err := runRestore(*restoreFile, *restorePwF, *stateDir, *conf, *sock); err != nil {
-			fatal(err)
+		if err := core.RunRestore(*restoreFile, *restorePwF, *stateDir, *conf, *sock); err != nil {
+			core.Fatal(err)
 		}
 		return
 	case *backupNow:
-		op(*sock, "backup.run", nil)
+		core.Op(*sock, "backup.run", nil)
 		fmt.Println("A backup has started on this node. See how it went with: logdir --backup-status")
 		return
 	case *backupClus:
-		runBackupCluster(*sock)
+		cluster.RunBackupCluster(*sock)
 		return
 	case *backupStat:
-		showBackupStatus(*sock)
+		core.ShowBackupStatus(*sock)
 		return
 	case cli.run(*sock):
 		return
@@ -336,13 +342,13 @@ func main() {
 		return
 	}
 
-	applyPendingRestore(*stateDir, *conf) // a restore that the GUI prepared and confirmed
+	core.ApplyPendingRestore(*stateDir, *conf) // a restore that the GUI prepared and confirmed
 	_, statErr := os.Stat(*conf)
 	configExists := statErr == nil
 	created := false
-	dc, err := loadConfig(*conf)
+	dc, err := core.LoadConfig(*conf)
 	if err != nil {
-		fatalf("Configuration error: %v", err)
+		core.Fatalf("Configuration error: %v", err)
 	}
 	if *level != "" {
 		dc.LogLevel = *level
@@ -355,31 +361,31 @@ func main() {
 
 	if configExists {
 		if err := dc.Validate(); err != nil {
-			fatalf("Configuration error: %v", err)
+			core.Fatalf("Configuration error: %v", err)
 		}
 	} else {
 		// Absent config: write one with the defaults and no gateways, then start.
-		dc.Groups = []GroupConfig{}
-		if err := dc.save(*conf); err != nil {
-			fatalf("cannot create %s: %v", *conf, err)
+		dc.Groups = []core.GroupConfig{}
+		if err := dc.Save(*conf); err != nil {
+			core.Fatalf("cannot create %s: %v", *conf, err)
 		}
 		created = true
 	}
 
-	setupLogging(dc.LogLevel)
-	startLogFile(*stateDir)
-	startContentLog(*stateDir)
+	core.SetupLogging(dc.LogLevel)
+	core.StartLogFile(*stateDir)
+	mcp.StartContentLog(*stateDir)
 	if !created {
-		infof("logdir starting — %d group(s)", len(dc.Groups))
+		core.Infof("logdir starting — %d group(s)", len(dc.Groups))
 	} else {
-		infof("logdir starting — config file %s not found, created it with the defaults", *conf)
+		core.Infof("logdir starting — config file %s not found, created it with the defaults", *conf)
 	}
 	if err := run(dc, *conf, *sock, *stateDir); err != nil {
-		fatal(err)
+		core.Fatal(err)
 	}
 }
 
-func run(dc *DaemonConfig, confFile, sockPath, stateDir string) error {
+func run(dc *core.DaemonConfig, confFile, sockPath, stateDir string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
@@ -393,7 +399,7 @@ func run(dc *DaemonConfig, confFile, sockPath, stateDir string) error {
 			case <-ctx.Done():
 				return
 			case <-usr1:
-				warnf("SIGUSR1: every goroutine's stack is written to standard error (journalctl -u logdir)")
+				core.Warnf("SIGUSR1: every goroutine's stack is written to standard error (journalctl -u logdir)")
 				fmt.Fprintf(os.Stderr, "--- goroutine dump (SIGUSR1) %s ---\n%s--- end of goroutine dump ---\n", time.Now().Format(time.RFC3339), goroutineDump())
 			}
 		}
@@ -407,26 +413,26 @@ func run(dc *DaemonConfig, confFile, sockPath, stateDir string) error {
 	if err != nil {
 		return err
 	}
-	mg.upd.exePath = func() (string, error) { return exe, nil }
+	mg.upd.ExePath = func() (string, error) { return exe, nil }
 	if mg.upd.GuardOnStart() { // the previous update never stayed up: back to the old binary
-		warnf("restarting into the restored previous version")
+		core.Warnf("restarting into the restored previous version")
 		return syscall.Exec(exe, os.Args, os.Environ())
 	}
 	if n := mg.upd.RolledBackNotice(); n != "" {
-		warnf("update: %s", n)
+		core.Warnf("update: %s", n)
 	}
 	var reexec atomic.Bool
 	mg.restartFn = func() { reexec.Store(true); stop() }
 
 	// the saved host history comes back at start; the last save happens when the daemon stops
-	savedStats := startPersistence(stateDir, ctx.Done())
+	savedStats := core.StartPersistence(stateDir, ctx.Done())
 
-	sup := NewSupervisor(ctx, dc)
+	sup := core.NewSupervisor(ctx, dc)
 	sup.StartAll()
-	go applySNMP(dc.snmpSettings())
-	go snmpRefresh(ctx, sup)
-	go applyLLDP(dc.Settings.LLDP)
-	go lldpWatch(ctx, sup)
+	go core.ApplySNMP(dc.SnmpSettings())
+	go core.SnmpRefresh(ctx, sup)
+	go core.ApplyLLDP(dc.Settings.LLDP)
+	go core.LldpWatch(ctx, sup)
 	go mg.sched.Run(ctx)
 
 	st := NewStatusServer(sockPath, sup)
@@ -434,7 +440,7 @@ func run(dc *DaemonConfig, confFile, sockPath, stateDir string) error {
 	mg.gwIPsFn = func() []string {
 		var out []string
 		seen := map[string]bool{}
-		for _, r := range st.snapshot() {
+		for _, r := range st.Snapshot() {
 			if r.Local && r.PeerIP != "" && !seen[r.PeerIP] {
 				seen[r.PeerIP] = true
 				out = append(out, r.PeerIP)
@@ -443,17 +449,17 @@ func run(dc *DaemonConfig, confFile, sockPath, stateDir string) error {
 		sort.Strings(out)
 		return out
 	}
-	mg.gwFn = func() []GwState {
-		cfg, snap := sup.config(), st.snapshot()
-		gs := gatewayStates(cfg, snap)
+	mg.gwFn = func() []core.GwState {
+		cfg, snap := sup.Config(), st.Snapshot()
+		gs := cluster.GatewayStates(cfg, snap)
 		// each gateway's health as this node's own drawing colours it, so the other nodes can show it too
 		groups := buildCanvas(cfg, snap)
-		markOffnet(groups, sup.offnetGroups())
-		off := sup.offnetGroups()
+		markOffnet(groups, sup.OffnetGroups())
+		off := sup.OffnetGroups()
 		for i := range gs {
 			_, gs[i].Offnet = off[gs[i].GroupID]
 			for _, g := range cfg.Groups { // removed from the gateway: it can never serve it either
-				if g.GroupID == gs[i].GroupID && containsStr(g.ExcludedNodes, localNodeID()) {
+				if g.GroupID == gs[i].GroupID && core.ContainsStr(g.ExcludedNodes, core.LocalNodeID()) {
 					gs[i].Offnet = true
 				}
 			}
@@ -465,94 +471,96 @@ func run(dc *DaemonConfig, confFile, sockPath, stateDir string) error {
 		}
 		return gs
 	}
-	mg.pausedFn = func() bool { return sup.config().NodePaused }
+	mg.pausedFn = func() bool { return sup.Config().NodePaused }
 	mg.anycastFn = sup.AllAnycastStates
 	mg.tshootFn = func() map[string]any {
-		return map[string]any{"canvas": st.canvasGroups(), "gateway-snapshot": st.snapshot()}
+		return map[string]any{"canvas": st.CanvasGroups(), "gateway-snapshot": st.Snapshot()}
 	}
 	host, _ := os.Hostname()
-	ae := NewAlertEngine(stateDir, host, func() *AlertsConfig { return sup.config().Settings.Alerts })
+	ae := NewAlertEngine(stateDir, host, func() *core.AlertsConfig { return sup.Config().Settings.Alerts })
 	ae.st, ae.mg, ae.sample = st, mg, ae.sampleNode
 	mg.alerts, st.alerts = ae, ae
 	go ae.Run(ctx)
-	be := NewBackupEngine(stateDir, confFile, host, func() *BackupConfig { return sup.config().Settings.Backup })
-	be.scheduled = func() bool { return backupScheduled(sup.config().Settings.Schedule, localNodeID()) }
+	be := core.NewBackupEngine(stateDir, confFile, host, func() *core.BackupConfig { return sup.Config().Settings.Backup })
+	be.Scheduled = func() bool { return backupScheduled(sup.Config().Settings.Schedule, core.LocalNodeID()) }
 	mg.backup = be
 	go be.Run(ctx)
 	if err := st.Start(); err != nil {
-		warnf("status socket unavailable (%s): %v — --show-* commands will not work", sockPath, err)
+		core.Warnf("status socket unavailable (%s): %v — --show-* commands will not work", sockPath, err)
 	}
 
-	var web *WebServer
+	var ws *web.WebServer
+	var mcpL *mcp.McpListeners
 	reload := func() error {
-		nu, err := loadConfig(confFile)
+		nu, err := core.LoadConfig(confFile)
 		if err == nil {
 			err = nu.Validate()
 		}
 		if err != nil {
-			warnf("Config reload skipped — %v", err)
+			core.Warnf("Config reload skipped — %v", err)
 			return err
 		}
-		infof("Config file changed — reloading")
+		core.Infof("Config file changed — reloading")
 		sup.Reload(nu)
-		go applySNMP(nu.snmpSettings())
-		go applyLLDP(nu.Settings.LLDP)
+		go core.ApplySNMP(nu.SnmpSettings())
+		go core.ApplyLLDP(nu.Settings.LLDP)
 		mg.OnConfigLoaded(nu)
-		if web != nil {
-			go web.mcp.reconcile()
-			go func() { ensureReadGroup(nu.Web); web.Apply(nu.Web) }() // async: a listener restart must not wait on the request that triggered it
+		if ws != nil {
+			go mcpL.Reconcile()
+			go func() { web.EnsureReadGroup(nu.Web); ws.Apply(nu.Web) }() // async: a listener restart must not wait on the request that triggered it
 		}
 		return nil
 	}
 	mg.reloadFn = reload
-	web = NewWebServer(mg, st, sysAuth{})
-	mg.webH = web.Handler()
-	ensureReadGroup(dc.Web)
-	web.Apply(dc.Web)
-	defer web.Stop()
-	web.mcp.Start()
-	defer web.mcp.Stop()
-	ldSvc = newLdService(web.status.sup, mg)
-	ldSvc.Start()
-	defer ldSvc.Stop()
+	ws = web.NewWebServer(mg, st, web.SysAuth{})
+	mg.webH = ws.Handler()
+	web.EnsureReadGroup(dc.Web)
+	ws.Apply(dc.Web)
+	defer ws.Stop()
+	mcpL = mcp.NewMCPListeners(ws)
+	mcpL.Start()
+	defer mcpL.Stop()
+	logs.LdSvc = logs.NewLdService(st.sup, mg.cl, mg.stateDir, mg.certs)
+	logs.LdSvc.Start()
+	defer logs.LdSvc.Stop()
 	mg.OnConfigLoaded(dc) // first history entry, cluster listener
 	defer mg.cl.Stop()
 	go mg.cl.Run(ctx)
 	go func() {
 		select {
 		case <-ctx.Done():
-		case <-time.After(bootConfirmAfter):
-			mg.upd.GuardConfirm(mg.cl.selfAddrForEvents())
+		case <-time.After(core.BootConfirmAfter):
+			mg.upd.GuardConfirm(mg.cl.SelfAddrForEvents())
 		}
 	}()
 	go certExpiryWatch(ctx, mg)
-	w := NewConfigWatcher(confFile, func() { reload() })
+	w := core.NewConfigWatcher(confFile, func() { reload() })
 	if err := w.Start(ctx); err != nil {
-		warnf("config watch unavailable: %v — edits need a restart", err)
+		core.Warnf("config watch unavailable: %v — edits need a restart", err)
 	}
 
-	infof("logdir running — %d group(s), watching %s", len(dc.Groups), confFile)
+	core.Infof("logdir running — %d group(s), watching %s", len(dc.Groups), confFile)
 	if cpuProcs > 0 {
-		infof("CPU limit of %.2f in this cgroup: using %d scheduler threads instead of %d", cpuQuota, cpuProcs, runtime.NumCPU())
+		core.Infof("CPU limit of %.2f in this cgroup: using %d scheduler threads instead of %d", cpuQuota, cpuProcs, runtime.NumCPU())
 	}
 	<-ctx.Done()
-	infof("Shutdown signal received")
+	core.Infof("Shutdown signal received")
 	st.Stop()
 	done := make(chan struct{})
 	go func() { sup.StopAll(); close(done) }()
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
-		warnf("shutdown timed out")
+		core.Warnf("shutdown timed out")
 	}
 	savedStats()
 	if reexec.Load() {
 		// Exec replaces the process: the deferred Stops never run, so the log store is flushed here (the minutes not yet written, the open one
 		// too) or an update loses the last two minutes of whatever this node was collecting
-		ldSvc.Stop()
-		web.Stop()
+		logs.LdSvc.Stop()
+		ws.Stop()
 		mg.cl.Stop()
-		infof("re-executing %s", exe)
+		core.Infof("re-executing %s", exe)
 		return syscall.Exec(exe, os.Args, os.Environ())
 	}
 	return nil
@@ -563,7 +571,7 @@ func run(dc *DaemonConfig, confFile, sockPath, stateDir string) error {
 func certExpiryWatch(ctx context.Context, mg *Mgmt) {
 	for {
 		if w := mg.certs.ExpiryWarning(); w != "" {
-			warnf("web: %s — replace it under Configure ▸ Web GUI or with logdir --tls-install", w)
+			core.Warnf("web: %s — replace it under Configure ▸ Web GUI or with logdir --tls-install", w)
 		}
 		select {
 		case <-ctx.Done():
@@ -573,15 +581,12 @@ func certExpiryWatch(ctx context.Context, mg *Mgmt) {
 	}
 }
 
-func fatal(err error)           { fmt.Fprintln(os.Stderr, err); os.Exit(1) }
-func fatalf(f string, a ...any) { fmt.Fprintf(os.Stderr, f+"\n", a...); os.Exit(1) }
-
 // ── CLI views ────────────────────────────────────────────────────────────────
 
 func mustStatus(sock, cmd string) map[string]any {
 	res, err := statusRequest(sock, map[string]any{"cmd": cmd})
 	if err != nil {
-		fatal(err)
+		core.Fatal(err)
 	}
 	return res
 }
@@ -592,9 +597,9 @@ func decodeData(res map[string]any, v any) {
 }
 
 func showNeighbors(sock string) {
-	var rows []SnapshotRow
+	var rows []core.SnapshotRow
 	decodeData(mustStatus(sock, "snapshot"), &rows)
-	peers := peersOnly(rows)
+	peers := core.PeersOnly(rows)
 	if len(peers) == 0 {
 		fmt.Println("No neighbors.")
 		return
@@ -607,30 +612,30 @@ func showNeighbors(sock string) {
 		if p.Preempt {
 			state += " preempt"
 		}
-		fmt.Printf(f, itoa(p.GroupID), p.AF, p.PeerIP, itoa(p.Priority), itoa(p.AfnID),
-			itoa(p.Weight), helloText(p.HelloAvgMS, p.HelloMaxMS), state)
+		fmt.Printf(f, core.Itoa(p.GroupID), p.AF, p.PeerIP, core.Itoa(p.Priority), core.Itoa(p.AfnID),
+			core.Itoa(p.Weight), helloText(p.HelloAvgMS, p.HelloMaxMS), state)
 	}
 }
 
 func showGatewayTable(sock string) {
-	var rows []SnapshotRow
+	var rows []core.SnapshotRow
 	res := mustStatus(sock, "snapshot")
 	decodeData(res, &rows)
-	groups := buildGateways(rows)
+	groups := core.BuildGateways(rows)
 	ipNames := map[string]string{}
 	if nm, ok := res["names"].(map[string]any); ok {
 		for ip, n := range nm {
 			ipNames[ip], _ = n.(string)
 		}
 	}
-	nameMembers(groups, ipNames)
+	core.NameMembers(groups, ipNames)
 	if len(groups) == 0 {
 		fmt.Println("No gateway groups.")
 		return
 	}
 	names := map[int]string{}
-	if res, err := statusRequestTimeout(sock, map[string]any{"cmd": "canvas"}, 10*time.Second); err == nil {
-		var cg []CanvasGateway
+	if res, err := core.StatusRequestTimeout(sock, map[string]any{"cmd": "canvas"}, 10*time.Second); err == nil {
+		var cg []core.CanvasGateway
 		decodeData(res, &cg)
 		for _, c := range cg {
 			names[c.GroupID] = c.Name
@@ -649,8 +654,8 @@ func showGatewayTable(sock string) {
 			if m.Local {
 				hello, flag = "(local)", " *"
 			}
-			fmt.Printf("%-18s %-40s %-5d %-5d %-7d %-8s %-10s %-13s %s\n", orDefault(m.Name, "-")+flag, m.IP, m.Priority,
-				m.Slot, m.Weight, m.Role, strings.ToUpper(m.State), hello, orDefault(m.VMAC, "-"))
+			fmt.Printf("%-18s %-40s %-5d %-5d %-7d %-8s %-10s %-13s %s\n", core.OrDefault(m.Name, "-")+flag, m.IP, m.Priority,
+				m.Slot, m.Weight, m.Role, strings.ToUpper(m.State), hello, core.OrDefault(m.VMAC, "-"))
 		}
 		fmt.Println()
 	}
@@ -696,7 +701,7 @@ func yn(b bool) string {
 }
 
 func interactiveConfigure(path string) error {
-	dc, err := loadConfig(path)
+	dc, err := core.LoadConfig(path)
 	if err != nil {
 		return err
 	}
@@ -708,8 +713,8 @@ func interactiveConfigure(path string) error {
 	fmt.Printf("\nCurrently %d group(s) configured.\n", len(dc.Groups))
 	n := p.askInt("How many groups?", len(dc.Groups))
 	for len(dc.Groups) < n {
-		g := newGatewayGroup()
-		g.GroupID = firstGroupID + len(dc.Groups)
+		g := core.NewGatewayGroup()
+		g.GroupID = core.FirstGroupID + len(dc.Groups)
 		dc.Groups = append(dc.Groups, g)
 	}
 	if n < len(dc.Groups) && n >= 0 {
@@ -728,7 +733,7 @@ func interactiveConfigure(path string) error {
 		g.MaxAFNs = p.askInt("Max active forwarders (1-255)", g.MaxAFNs)
 		fmt.Println("    LB methods: roundrobin, weighted, hostpinned, failover")
 		for {
-			m, err := parseLB(p.ask("LB method", g.LBMethod.String()))
+			m, err := core.ParseLB(p.ask("LB method", g.LBMethod.String()))
 			if err == nil {
 				g.LBMethod = m
 				break
@@ -743,7 +748,7 @@ func interactiveConfigure(path string) error {
 	if err := dc.Validate(); err != nil {
 		return fmt.Errorf("not saved: %w", err)
 	}
-	if err := dc.save(path); err != nil {
+	if err := dc.Save(path); err != nil {
 		return err
 	}
 	fmt.Printf("\nConfiguration saved to %s\n", path)

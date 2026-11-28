@@ -9,36 +9,41 @@ import (
 	"net/netip"
 	"testing"
 	"time"
+
+	"logdir/internal/cluster"
+	"logdir/internal/core"
+	"logdir/internal/logs"
+	"logdir/internal/web"
 )
 
 // A search over two nodes, one of them far: what this node holds comes back first, the far node's part after, and the last part
 // is the whole answer, the same as without streaming.
 func TestStreamedSearchParts(t *testing.T) {
-	failDelay = 0
+	web.FailDelay = 0
 	a, b := newTNode(t, "A"), newTNode(t, "B")
 	a.join2(t, b)
 	a.sync()
-	st := newLdStore(t.TempDir(), "n1")
+	st := logs.NewLdStore(t.TempDir(), "n1")
 	st.Load()
-	svc := &ldService{store: st, senders: map[netip.Addr]*ldSender{}, refusedAt: map[netip.Addr]time.Time{}, expDNS: map[string][]netip.Prefix{}, mg: a.mg}
-	svc.testCfg.Store(&LogsConfig{})
-	svc.expNets = []ldSenderNet{{netip.PrefixFrom(ldSrc, ldSrc.BitLen()), "sw1"}}
-	oldSvc := ldSvc
-	ldSvc = svc // B answers from the same store (one process): every message comes back twice
-	t.Cleanup(func() { ldSvc = oldSvc; ldPeerTestDelay = 0; closePeerConns() })
+	svc := &logs.LdService{Store: st, BySender: map[netip.Addr]*logs.LdSender{}, RefusedAt: map[netip.Addr]time.Time{}, ExpDNS: map[string][]netip.Prefix{}, Cl: a.mg.cl}
+	svc.TestCfg.Store(&core.LogsConfig{})
+	svc.ExpNets = []logs.LdSenderNet{{P: netip.PrefixFrom(ldSrc, ldSrc.BitLen()), Name: "sw1"}}
+	oldSvc := logs.LdSvc
+	logs.LdSvc = svc // B answers from the same store (one process): every message comes back twice
+	t.Cleanup(func() { logs.LdSvc = oldSvc; logs.LdPeerTestDelay = 0; cluster.ClosePeerConns() })
 	now := time.Now()
 	for i := range 5 {
-		svc.handle(ldSrc, netip.Addr{}, "udp", []byte("<14>sw1 bgpd: keepalive "+string(rune('a'+i))), now.Add(-time.Duration(i)*time.Second))
+		svc.Handle(ldSrc, netip.Addr{}, "udp", []byte("<14>sw1 bgpd: keepalive "+string(rune('a'+i))), now.Add(-time.Duration(i)*time.Second))
 	}
-	q := LdQuery{From: now.Add(-time.Hour).UnixMilli(), To: now.Add(time.Minute).UnixMilli(), Q: "keepalive", MinSev: -1, Limit: 100}
+	q := core.LdQuery{From: now.Add(-time.Hour).UnixMilli(), To: now.Add(time.Minute).UnixMilli(), Q: "keepalive", MinSev: -1, Limit: 100}
 	if err := q.Validate(); err != nil {
 		t.Fatal(err)
 	}
-	if len(svc.otherPeers()) != 1 {
-		t.Fatalf("peers: %+v", svc.otherPeers())
+	if len(svc.OtherPeers()) != 1 {
+		t.Fatalf("peers: %+v", svc.OtherPeers())
 	}
 	const far = 400 * time.Millisecond
-	ldPeerTestDelay = far
+	logs.LdPeerTestDelay = far
 
 	start := time.Now()
 	type part struct {
@@ -48,7 +53,7 @@ func TestStreamedSearchParts(t *testing.T) {
 		at      time.Duration
 	}
 	var parts []part
-	final := svc.SearchEach(context.Background(), q, func(r LdResult, done bool) {
+	final := svc.SearchEach(context.Background(), q, func(r logs.LdResult, done bool) {
 		parts = append(parts, part{len(r.Messages), r.Pending, done, time.Since(start)})
 	})
 	if len(parts) != 2 || parts[0].n != 5 || len(parts[0].pending) != 1 || parts[0].pending[0] != b.addr || parts[0].done || parts[0].at >= far {
@@ -72,8 +77,8 @@ func TestStreamedSearchParts(t *testing.T) {
 
 	// Over HTTP: the first line is written (flushed) before the far node answers.
 	srv := httptest.NewServer(http.HandlerFunc(func(rw http.ResponseWriter, r *http.Request) {
-		streamParts(rw, nil, func(part func(any, bool)) {
-			svc.StatsEach(r.Context(), q, 0, 5, func(res LdStatsResult, done bool) { part(res, done) })
+		logs.StreamParts(rw, nil, func(part func(any, bool)) {
+			svc.StatsEach(r.Context(), q, 0, 5, func(res logs.LdStatsResult, done bool) { part(res, done) })
 		})
 	}))
 	defer srv.Close()
@@ -88,14 +93,14 @@ func TestStreamedSearchParts(t *testing.T) {
 	}
 	sc := bufio.NewScanner(resp.Body)
 	var lines []struct {
-		Data LdStatsResult `json:"data"`
-		Done bool          `json:"done"`
+		Data logs.LdStatsResult `json:"data"`
+		Done bool               `json:"done"`
 		at   time.Duration
 	}
 	for sc.Scan() {
 		var l struct {
-			Data LdStatsResult `json:"data"`
-			Done bool          `json:"done"`
+			Data logs.LdStatsResult `json:"data"`
+			Done bool               `json:"done"`
 			at   time.Duration
 		}
 		if err := json.Unmarshal(sc.Bytes(), &l); err != nil {
@@ -113,10 +118,10 @@ func TestStreamedSearchParts(t *testing.T) {
 
 	// A node that fails is reported in the part that is last, and the answer still ends.
 	b.mg.cl.Stop()
-	closePeerConns()
-	ldPeerTestDelay = 0
+	cluster.ClosePeerConns()
+	logs.LdPeerTestDelay = 0
 	parts = nil
-	final = svc.SearchEach(context.Background(), q, func(r LdResult, done bool) {
+	final = svc.SearchEach(context.Background(), q, func(r logs.LdResult, done bool) {
 		parts = append(parts, part{len(r.Messages), r.Pending, done, 0})
 	})
 	if len(final.NodeErrors) != 1 || len(final.Messages) != 5 || !parts[len(parts)-1].done {

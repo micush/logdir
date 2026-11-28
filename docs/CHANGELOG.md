@@ -1,5 +1,27 @@
 # Changelog
 
+## [v50] - 2026-11-28 — MCP: list_nodes on a node with no cluster, logs_shipping in the instructions, src= no longer hides src_ip
+
+### Fixed
+- **`list_nodes` on a node that is not in a cluster** said `primary: false`, `paused: false` and `addr: ""`, while `get_topology` called the same node the primary and showed it paused. The MCP layer built that node with only its name filled in (`mcpCtx.peers`, `mcp.go`). It now reports it as the primary of a cluster of one (`role: "primary"`, `primary: true`), with its real pause (Operate ▸ Node) and update state, and no `addr` (it has no cluster address). In a cluster nothing changes.
+- **Fields: `src=` hid a message's own `src_ip`.** For a message with both, e.g. `src=2001:db8::1 src_ip=10.0.0.7`, `src=` filled in `src_ip` under the alias first and the real `src_ip=10.0.0.7` was then dropped as a duplicate, so `fields=true` showed the wrong address and a search for `src_ip=10.0.0.7` missed the message (the same for `dst`/`dst_ip` and every other alias). A field the message has under its own name now replaces one an alias filled in (`ldFieldSet.alias`, `ld_fields.go`, no allocation); between two real fields the first still counts, and an alias still fills in a field the message does not have.
+
+### Changed
+- `list_nodes` gives each node a `role` (`primary` or `replica`), as its description already said; `primary` stays for callers that read it. `addr` is left out for a node that is not in a cluster; the description says so.
+- The MCP instructions (`initialize`) name `logs_shipping` (where each node sends the logs on to); it was in `tools/list` but not in the instructions. README (the MCP table and tool list) and CLAUDE.md list it too.
+
+### Added
+- `TestMCPLogTools`: the log tools through `/mcp` on real messages (there was no such test; flowdir has `TestMCPFlowTools`): search, severity, `q` with a field and `fields=true`, tail, stats with a field, status, senders, shipping, a bad severity refused, and no public IPv4 or IPv6 address, e-mail domain or public AS number in any answer, in the message or its fields.
+- `TestMCPListNodesStandalone` (primary, role, no `addr`, pause seen as `get_topology` sees it) and `TestFieldAliasDoesNotHideRealField` (both orders, alias still fills in, the first of two real fields counts, a search by the real value finds the message). Both fail on v49.
+
+### Verified
+- gofmt, `go build`, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./...` and `go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64 (cross builds use the PAM stub; only amd64 is built with PAM).
+- `initialize`, `tools/list` and every tool's `tools/call` were read through the test server before and after the change, for read-only and read-write callers.
+
+### Not verified
+- `list_nodes` in a real multi-node cluster (no live daemons run; the cluster path is unchanged and covered by the existing tests).
+- No GUI change; not opened in a browser.
+
 ## [v49] - 2026-11-26 — SNMP traps: Cisco MAC moves
 
 ### Added

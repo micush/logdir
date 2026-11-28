@@ -3,7 +3,7 @@
 LogDirector (`logdir`) is a Go daemon: a clustered, highly available syslog collector (`ld_*.go`: UDP, TCP and TLS receive, per-node hourly store, cluster-wide search) with a
 built-in MCP server. Underneath is the Distributed Gateway Load Balancing Protocol (a VIP shared by an AGC and AFNs through
 per-node virtual MACs, plus anycast addresses over BGP/OSPF). The MCP endpoint (`/mcp`, its own HTTPS listener on every gateway
-address, port 443; the GUI is not served there) is read-only: `logs_search`, `logs_tail`, `logs_stats`, `logs_senders`, `logs_status`,
+address, port 443; the GUI is not served there) is read-only: `logs_search`, `logs_tail`, `logs_stats`, `logs_senders`, `logs_status`, `logs_shipping`,
 `list_nodes`, `get_topology`. Syslog is accepted only from the senders in `settings.logs.senders` (a name and an
 address, a network or a host name). It was forked from flowdir (v37); the old flow collector is gone. This file is a
 standing instruction from the project owner so it doesn't need repeating each

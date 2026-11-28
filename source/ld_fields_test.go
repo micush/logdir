@@ -244,3 +244,36 @@ func TestFieldLiteralShortcut(t *testing.T) {
 		t.Errorf("only %d words tried", len(words))
 	}
 }
+
+// A field the message has under its own name wins over one an alias filled in first (src= gives src_ip only when the
+// message has no src_ip), in either order, and the first real one still counts.
+func TestFieldAliasDoesNotHideRealField(t *testing.T) {
+	for _, msg := range []string{
+		"action=deny src=2001:db8::1 src_ip=10.0.0.7 dst_port=443",
+		"action=deny src_ip=10.0.0.7 src=2001:db8::1 dst_port=443",
+	} {
+		got := fieldMap(LdMsg{Prog: "TRAFFIC", Msg: msg})
+		wantFields(t, msg, got, map[string]string{"src": "2001:db8::1", "src_ip": "10.0.0.7", "dst_port": "443", "action": "deny"})
+		n := 0
+		for _, f := range ldFields(&LdMsg{Prog: "TRAFFIC", Msg: msg}) {
+			if f.Key == "src_ip" {
+				n++
+			}
+		}
+		if n != 1 {
+			t.Errorf("%s: src_ip %d times", msg, n)
+		}
+	}
+	// no src_ip in the message: the alias still fills it in
+	wantFields(t, "alias", fieldMap(LdMsg{Msg: "SRC=10.1.1.1 DST=10.2.2.2"}), map[string]string{"src_ip": "10.1.1.1", "dst_ip": "10.2.2.2"})
+	// two real ones: the first counts
+	wantFields(t, "first", fieldMap(LdMsg{Msg: "src_ip=10.0.0.1 src_ip=10.0.0.2"}), map[string]string{"src_ip": "10.0.0.1"})
+	// and a search by it finds the message
+	now := ldNow
+	s := newTestStore(t, &now)
+	addAt(s, now.Add(-time.Minute), "fw1", "TRAFFIC", 6, "action=deny src=2001:db8::1 src_ip=10.0.0.7 dst_port=443")
+	q := LdQuery{From: now.Add(-time.Hour).UnixMilli(), MinSev: -1, Q: "src_ip=10.0.0.7", Limit: 10}
+	if a := s.Search(context.Background(), q); len(a.Msgs) != 1 {
+		t.Fatalf("search src_ip=10.0.0.7: %v", msgsOf(a))
+	}
+}

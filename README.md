@@ -49,7 +49,7 @@ Most of this is built in and in daily use. Here is where each piece lives.
 | Log collector | syslog over UDP, TCP and TLS on the gateway addresses, kept per node and searched cluster-wide (`--logs-search`, MCP `logs_search`, `/api/logs/search`, **Logs** in the GUI) |
 | Senders | **Configure ▸ Senders** (`settings.logs.senders`): a name and an address, a network or a host name; anything else is refused |
 | Pattern alerts | **Configure ▸ Senders ▸ Pattern alerts** (`settings.logs.alerts`) |
-| MCP | read-only: `logs_search`, `logs_tail`, `logs_stats`, `logs_senders`, `logs_status`, `list_nodes`, `get_topology` |
+| MCP | read-only: `logs_search`, `logs_tail`, `logs_stats`, `logs_senders`, `logs_status`, `logs_shipping`, `list_nodes`, `get_topology` |
 | Web GUI | Logs (the default page), Topology, Monitor, Configure |
 
 ## A look around the GUI
@@ -109,6 +109,7 @@ The endpoint speaks MCP over streamable HTTP with JSON answers (protocol version
 | `logs_stats` | how many messages match, by severity, by the busiest hosts and programs, and per interval |
 | `logs_senders` | the senders and when each was last heard from, with the name each address reverse-looks-up to in DNS |
 | `logs_status` | the collector on every node: what it listens on, counters, disk |
+| `logs_shipping` | where each node sends the logs on to (Configure ▸ Shipping): each destination's state, how far behind it is and its last error |
 | `list_nodes`, `get_topology` | the cluster: the nodes (reachable, paused, primary, version, update state) and the gateways with their active node and anycast addresses |
 
 That's all. An MCP caller can only read logs and the state of the cluster. There's no tool for logdir's own configuration, the GUI's API, alerts, the scheduler, updates, the host's load, LLDP, the log, users, backups or cluster tokens. No tool takes a `node` either: the node that serves the endpoint answers, and a `node` argument is refused. An administrator reads those things in the GUI or the CLI.

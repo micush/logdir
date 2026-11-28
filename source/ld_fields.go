@@ -54,17 +54,36 @@ var ldFieldAlias = map[string]string{
 type ldFieldSet struct {
 	kv  []ldKV
 	buf [16]ldKV // the first fields, without an allocation
+	// alias marks the entries of kv (by index) that were filled in under an alias (src_ip from src=…), not read from the message
+	// under that name: a field the message does have under that name replaces such an entry.  add stops at ldFieldsMax and adds
+	// at most two entries, so 128 bits are enough.
+	alias [2]uint64
 }
 
-// has says whether key k is already there: a look along the list, which for the few fields of a message is quicker than a map
-// made for every message (at most ldFieldsMax and their aliases).
-func (fs *ldFieldSet) has(k string) bool {
+// find is the index of key k, or -1: a look along the list, which for the few fields of a message is quicker than a map made
+// for every message (at most ldFieldsMax and their aliases).
+func (fs *ldFieldSet) find(k string) int {
 	for i := range fs.kv {
 		if fs.kv[i].Key == k {
-			return true
+			return i
 		}
 	}
-	return false
+	return -1
+}
+
+func (fs *ldFieldSet) has(k string) bool { return fs.find(k) >= 0 }
+
+func (fs *ldFieldSet) isAlias(i int) bool { return i < 128 && fs.alias[i/64]&(1<<(i%64)) != 0 }
+
+func (fs *ldFieldSet) setAlias(i int, on bool) {
+	if i >= 128 {
+		return
+	}
+	if on {
+		fs.alias[i/64] |= 1 << (i % 64)
+	} else {
+		fs.alias[i/64] &^= 1 << (i % 64)
+	}
 }
 
 func (fs *ldFieldSet) add(k, v string) {
@@ -81,16 +100,24 @@ func (fs *ldFieldSet) add(k, v string) {
 	if fs.kv == nil {
 		fs.kv = fs.buf[:0]
 	}
-	if fs.has(k) { // the first one counts (a JSON key and a key=value inside its text: the JSON's)
-		return
+	if i := fs.find(k); i >= 0 {
+		// the first one counts (a JSON key and a key=value inside its text: the JSON's), except over an alias: a message with
+		// src=2001:db8::1 src_ip=10.0.0.7 has src_ip 10.0.0.7, not the src_ip that src= filled in first
+		if !fs.isAlias(i) {
+			return
+		}
+		fs.kv[i].Val = v
+		fs.setAlias(i, false)
+	} else {
+		fs.kv = append(fs.kv, ldKV{k, v})
 	}
-	fs.kv = append(fs.kv, ldKV{k, v})
 	a := ldFieldAlias[k]
 	if (k == "src" || k == "dst") && ldLooksIP(v) { // iptables SRC= DST=, CEF src= dst=: only when it is an address
 		a = k + "_ip"
 	}
 	if a != "" && !fs.has(a) {
 		fs.kv = append(fs.kv, ldKV{a, v})
+		fs.setAlias(len(fs.kv)-1, true)
 	}
 }
 

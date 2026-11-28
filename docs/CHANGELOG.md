@@ -1,5 +1,13 @@
 # Changelog
 
+## [v53] - 2026-11-28 — version number only
+
+### Changed
+- `VERSION` is 53. Nothing else changed from v52: the code, the GUI and the docs are the same.
+
+### Verified
+- gofmt, `go build`, `go vet ./...`, `go test -race -count=1 ./...`, `CGO_ENABLED=0 go vet ./...` and `CGO_ENABLED=0 go test ./...`, builds for linux amd64, arm64, arm, 386 and riscv64. `TestVersionIsPlainInteger` passes.
+
 ## [v52] - 2026-11-28 — the Go code is split into packages, and the GUI into one script per page
 
 ### Changed
